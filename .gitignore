@@ -1,0 +1,6 @@
+CLAUDE.md
+node_modules/
+dist/
+.env
+*.log
+tests/

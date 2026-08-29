@@ -1,0 +1,8 @@
+services:
+  playlist2mp3:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - /media/raid/music:/media/raid/music
