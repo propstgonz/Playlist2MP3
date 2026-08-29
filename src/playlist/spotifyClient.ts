@@ -109,6 +109,14 @@ export class SpotifyClient implements PlaylistTrackSource {
             `Spotify playlist not found or not public (url: ${url})`,
           );
         }
+        if (response.status === 403) {
+          throw new NonRetryableError(
+            "Spotify API returned 403. Apps in Development Mode require the app owner's " +
+              "Spotify account to have an active Premium subscription, or the app must be " +
+              "approved for Extended Quota Mode. See: " +
+              "https://developer.spotify.com/documentation/web-api/concepts/quota-modes",
+          );
+        }
         if (response.status === 429) {
           const retryAfterSec = Number.parseInt(
             response.headers.get("Retry-After") ?? "1",

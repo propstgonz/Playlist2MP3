@@ -3,4 +3,4 @@ node_modules/
 dist/
 .env
 *.log
-tests/
+docker-compose.dev.yml
