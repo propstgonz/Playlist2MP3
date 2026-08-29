@@ -1,6 +1,7 @@
 services:
   playlist2mp3:
     build: .
+    container_name: playlist2mp3
     restart: unless-stopped
     env_file:
       - .env
