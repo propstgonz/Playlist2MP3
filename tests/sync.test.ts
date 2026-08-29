@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { syncPlaylist } from "../src/sync/syncPlaylist.js";
 import { runSyncCycle } from "../src/sync/syncCycle.js";
 import { rootLogger } from "../src/utils/logger.js";
+import { Semaphore } from "../src/utils/concurrency.js";
 import { commitFile } from "../src/filesystem/store.js";
 import type { PipelineOps } from "../src/downloader/pipeline.js";
 import type { PlaylistTrackSource } from "../src/playlist/spotifyClient.js";
@@ -69,7 +70,7 @@ test("first sync downloads all tracks and creates the playlist directory", async
 
       const summary = await syncPlaylist(config, {
         spotifyClient: client,
-        downloadConcurrency: 2,
+        downloadSemaphore: new Semaphore(2),
         tempDir,
         logger: rootLogger,
         pipelineOps: fakePipelineOps(),
@@ -101,7 +102,7 @@ test("second sync with no changes downloads nothing", async () => {
       const client = fakeSpotifyClient(new Map([["abc", tracks]]));
       const deps = {
         spotifyClient: client,
-        downloadConcurrency: 2,
+        downloadSemaphore: new Semaphore(2),
         tempDir,
         logger: rootLogger,
         pipelineOps: fakePipelineOps(),
@@ -130,7 +131,7 @@ test("adding one new track only downloads that track", async () => {
       };
       const deps = (tracks: readonly SpotifyTrack[]) => ({
         spotifyClient: fakeSpotifyClient(new Map([["abc", tracks]])),
-        downloadConcurrency: 2,
+        downloadSemaphore: new Semaphore(2),
         tempDir,
         logger: rootLogger,
         pipelineOps: fakePipelineOps(),
@@ -173,14 +174,14 @@ test("two playlists with identically named tracks stay isolated in their own dir
 
       await syncPlaylist(configA, {
         spotifyClient: clientA,
-        downloadConcurrency: 2,
+        downloadSemaphore: new Semaphore(2),
         tempDir,
         logger: rootLogger,
         pipelineOps: fakePipelineOps(),
       });
       await syncPlaylist(configB, {
         spotifyClient: clientB,
-        downloadConcurrency: 2,
+        downloadSemaphore: new Semaphore(2),
         tempDir,
         logger: rootLogger,
         pipelineOps: fakePipelineOps(),
@@ -257,7 +258,7 @@ test("restarting after a completed sync does not redownload anything", async () 
 
       await syncPlaylist(config, {
         spotifyClient: fakeSpotifyClient(new Map([["abc", tracks]])),
-        downloadConcurrency: 2,
+        downloadSemaphore: new Semaphore(2),
         tempDir,
         logger: rootLogger,
         pipelineOps: fakePipelineOps(),
@@ -265,7 +266,7 @@ test("restarting after a completed sync does not redownload anything", async () 
 
       const afterRestart = await syncPlaylist(config, {
         spotifyClient: fakeSpotifyClient(new Map([["abc", tracks]])),
-        downloadConcurrency: 2,
+        downloadSemaphore: new Semaphore(2),
         tempDir,
         logger: rootLogger,
         pipelineOps: fakePipelineOps(),
@@ -273,6 +274,74 @@ test("restarting after a completed sync does not redownload anything", async () 
 
       assert.equal(afterRestart.downloaded, 0);
       assert.equal(afterRestart.skipped, 2);
+    });
+  });
+});
+
+test("a slow playlist does not block a faster playlist from completing", async () => {
+  await withTempDir(async (musicRoot) => {
+    await withTempDir(async (tempDir) => {
+      const completionOrder: string[] = [];
+
+      const slowConfig: PlaylistConfig = {
+        id: "1",
+        name: "Slow",
+        url: "https://open.spotify.com/playlist/slow",
+        spotifyPlaylistId: "slow",
+        rootDir: musicRoot,
+      };
+      const fastConfig: PlaylistConfig = {
+        id: "2",
+        name: "Fast",
+        url: "https://open.spotify.com/playlist/fast",
+        spotifyPlaylistId: "fast",
+        rootDir: musicRoot,
+      };
+
+      const slowTracks = [
+        makeTrack("slow-1", "Slow One"),
+        makeTrack("slow-2", "Slow Two"),
+        makeTrack("slow-3", "Slow Three"),
+      ];
+      const fastTracks = [makeTrack("fast-1", "Fast One")];
+
+      const client: PlaylistTrackSource = {
+        getPlaylistTracks: async (playlistId) =>
+          playlistId === "slow" ? slowTracks : fastTracks,
+      };
+
+      const trackingOps: PipelineOps = {
+        ...fakePipelineOps(),
+        downloadSource: async (_source, workDir, baseName) => {
+          if (baseName.startsWith("slow-")) {
+            await new Promise((resolve) => setTimeout(resolve, 30));
+          }
+          const path = join(workDir, `${baseName}.raw`);
+          await writeFile(path, "raw-audio");
+          return path;
+        },
+        commitFile: async (tempPathArg, finalPathArg) => {
+          const result = await commitFile(tempPathArg, finalPathArg);
+          completionOrder.push(finalPathArg);
+          return result;
+        },
+      };
+
+      const config: AppConfig = {
+        syncIntervalSec: 3600,
+        downloadConcurrency: 2,
+        tempDir,
+        playlists: [slowConfig, fastConfig],
+      };
+
+      await runSyncCycle(config, rootLogger, undefined, {
+        spotifyClient: client,
+        pipelineOps: trackingOps,
+      });
+
+      const fastIndex = completionOrder.findIndex((p) => p.includes("Fast One"));
+      const lastSlowIndex = completionOrder.findIndex((p) => p.includes("Slow Three"));
+      assert.equal(fastIndex < lastSlowIndex, true);
     });
   });
 });

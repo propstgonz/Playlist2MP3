@@ -44,13 +44,12 @@ export class Semaphore {
   }
 }
 
-export async function runWithLimit<T>(
-  limit: number,
+export async function runWithSemaphore<T>(
+  semaphore: Semaphore,
   items: readonly T[],
   task: (item: T, index: number) => Promise<void>,
   signal?: AbortSignal,
 ): Promise<void> {
-  const semaphore = new Semaphore(limit);
   await Promise.all(
     items.map(async (item, index) => {
       const release = await semaphore.acquire(signal);
@@ -61,6 +60,15 @@ export async function runWithLimit<T>(
       }
     }),
   );
+}
+
+export async function runWithLimit<T>(
+  limit: number,
+  items: readonly T[],
+  task: (item: T, index: number) => Promise<void>,
+  signal?: AbortSignal,
+): Promise<void> {
+  return runWithSemaphore(new Semaphore(limit), items, task, signal);
 }
 
 export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {

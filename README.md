@@ -90,3 +90,7 @@ Tests run entirely offline: no real network calls, no real downloads, no depende
 - `src/types/` — shared type definitions.
 - `src/utils/` — logging, retry, and concurrency helpers.
 - `tests/` — unit and integration tests.
+
+## Disclaimer
+
+This project is intended for personal, offline backups of playlists you already have legitimate access to. It reads metadata from Spotify's public embed pages and resolves audio through third-party sources via `yt-dlp`; it is not affiliated with, endorsed by, or supported by Spotify. Spotify's Terms of Service govern what you may do with content obtained from their platform — you are responsible for complying with them, and with copyright law in your jurisdiction, when using this tool.

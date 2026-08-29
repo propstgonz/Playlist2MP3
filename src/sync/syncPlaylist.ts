@@ -1,13 +1,13 @@
 import type { PlaylistConfig, PlaylistSummary, SpotifyTrack } from "../types/index.js";
 import type { Logger } from "../utils/logger.js";
-import { runWithLimit } from "../utils/concurrency.js";
+import { runWithSemaphore, type Semaphore } from "../utils/concurrency.js";
 import { ensurePlaylistDir, computeTrackPaths, fileExists } from "../filesystem/store.js";
 import { runTrackPipeline, defaultPipelineOps, type PipelineOps } from "../downloader/pipeline.js";
 import { EMBED_TRACK_LIST_CAP, type PlaylistTrackSource } from "../playlist/spotifyClient.js";
 
 export interface SyncPlaylistDeps {
   readonly spotifyClient: PlaylistTrackSource;
-  readonly downloadConcurrency: number;
+  readonly downloadSemaphore: Semaphore;
   readonly tempDir: string;
   readonly logger: Logger;
   readonly pipelineOps?: PipelineOps;
@@ -74,8 +74,8 @@ export async function syncPlaylist(
     let skipped = 0;
     let failed = 0;
 
-    await runWithLimit(
-      deps.downloadConcurrency,
+    await runWithSemaphore(
+      deps.downloadSemaphore,
       missingTracks,
       async (track) => {
         const finalPath = trackPaths.get(track.id);
