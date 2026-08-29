@@ -4,6 +4,22 @@
   "description": "Headless containerized service that incrementally mirrors Spotify playlists to local MP3 collections.",
   "type": "module",
   "license": "MIT",
+  "author": "Alejandro Propst",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/propstgonz/Playlist2MP3.git"
+  },
+  "bugs": {
+    "url": "https://github.com/propstgonz/Playlist2MP3/issues"
+  },
+  "homepage": "https://github.com/propstgonz/Playlist2MP3#readme",
+  "keywords": [
+    "spotify",
+    "mp3",
+    "playlist",
+    "docker",
+    "self-hosted"
+  ],
   "engines": {
     "node": ">=20"
   },

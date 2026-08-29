@@ -10,8 +10,6 @@ export interface AppConfig {
   readonly syncIntervalSec: number;
   readonly downloadConcurrency: number;
   readonly tempDir: string;
-  readonly spotifyClientId: string;
-  readonly spotifyClientSecret: string;
   readonly playlists: readonly PlaylistConfig[];
 }
 
@@ -19,7 +17,6 @@ export interface SpotifyTrack {
   readonly id: string;
   readonly title: string;
   readonly artists: readonly string[];
-  readonly album: string;
   readonly durationMs: number;
   readonly trackNumber: number;
   readonly releaseYear: number | undefined;
@@ -52,6 +49,7 @@ export interface PlaylistSummary {
   readonly playlistId: string;
   readonly playlistName: string;
   readonly tracksFound: number;
+  readonly tracksUnavailable: number;
   readonly tracksNew: number;
   readonly downloaded: number;
   readonly skipped: number;

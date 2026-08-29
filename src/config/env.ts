@@ -14,13 +14,3 @@ export function parsePositiveInt(
   }
   return value;
 }
-
-export function requireString(
-  raw: string | undefined,
-  varName: string,
-): string {
-  if (raw === undefined || raw.trim() === "") {
-    throw new ConfigError(`${varName} is required`);
-  }
-  return raw;
-}

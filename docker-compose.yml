@@ -5,4 +5,4 @@ services:
     env_file:
       - .env
     volumes:
-      - /media/raid/music:/media/raid/music
+      - ${MUSIC_HOST_DIR}:/music

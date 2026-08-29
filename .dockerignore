@@ -6,3 +6,6 @@ dist
 tests
 CLAUDE.md
 .claude
+.github
+docker-compose.dev.yml
+README.md
