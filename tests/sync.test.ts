@@ -42,7 +42,10 @@ function fakePipelineOps(): PipelineOps {
 
 function fakeSpotifyClient(tracksByPlaylist: ReadonlyMap<string, readonly SpotifyTrack[]>): PlaylistTrackSource {
   return {
-    getPlaylistTracks: async (playlistId) => tracksByPlaylist.get(playlistId) ?? [],
+    getPlaylistTracks: async (playlistId) => ({
+      tracks: tracksByPlaylist.get(playlistId) ?? [],
+      unavailableCount: 0,
+    }),
   };
 }
 
@@ -225,7 +228,7 @@ test("a failing playlist does not prevent other playlists from completing", asyn
           if (playlistId === "broken") {
             throw new Error("Spotify API unreachable");
           }
-          return [makeTrack("t1", "Song One")];
+          return { tracks: [makeTrack("t1", "Song One")], unavailableCount: 0 };
         },
       };
 
@@ -306,8 +309,10 @@ test("a slow playlist does not block a faster playlist from completing", async (
       const fastTracks = [makeTrack("fast-1", "Fast One")];
 
       const client: PlaylistTrackSource = {
-        getPlaylistTracks: async (playlistId) =>
-          playlistId === "slow" ? slowTracks : fastTracks,
+        getPlaylistTracks: async (playlistId) => ({
+          tracks: playlistId === "slow" ? slowTracks : fastTracks,
+          unavailableCount: 0,
+        }),
       };
 
       const trackingOps: PipelineOps = {
@@ -342,6 +347,40 @@ test("a slow playlist does not block a faster playlist from completing", async (
       const fastIndex = completionOrder.findIndex((p) => p.includes("Fast One"));
       const lastSlowIndex = completionOrder.findIndex((p) => p.includes("Slow Three"));
       assert.equal(fastIndex < lastSlowIndex, true);
+    });
+  });
+});
+
+test("a track removed from Spotify's catalog is reported as unavailable and does not count as new or failed", async () => {
+  await withTempDir(async (musicRoot) => {
+    await withTempDir(async (tempDir) => {
+      const config: PlaylistConfig = {
+        id: "1",
+        name: "Rock",
+        url: "https://open.spotify.com/playlist/abc",
+        spotifyPlaylistId: "abc",
+        rootDir: musicRoot,
+      };
+      const client: PlaylistTrackSource = {
+        getPlaylistTracks: async () => ({
+          tracks: [makeTrack("t1", "Song One")],
+          unavailableCount: 1,
+        }),
+      };
+
+      const summary = await syncPlaylist(config, {
+        spotifyClient: client,
+        downloadSemaphore: new Semaphore(2),
+        tempDir,
+        logger: rootLogger,
+        pipelineOps: fakePipelineOps(),
+      });
+
+      assert.equal(summary.tracksFound, 1);
+      assert.equal(summary.tracksUnavailable, 1);
+      assert.equal(summary.tracksNew, 1);
+      assert.equal(summary.downloaded, 1);
+      assert.equal(summary.failed, 0);
     });
   });
 });

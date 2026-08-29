@@ -37,6 +37,7 @@ test("parses tracks from the playlist embed page", async () => {
               subtitle: "Artist One",
               duration: 180_000,
               entityType: "track",
+              isPlayable: true,
             },
           ]),
         ),
@@ -44,7 +45,7 @@ test("parses tracks from the playlist embed page", async () => {
       )) as typeof fetch,
     async () => {
       const client = new SpotifyClient();
-      const tracks = await client.getPlaylistTracks("abc");
+      const { tracks } = await client.getPlaylistTracks("abc");
       assert.equal(tracks.length, 1);
       assert.equal(tracks[0]?.id, "track1id00000000000000");
       assert.equal(tracks[0]?.title, "Song One");
@@ -74,6 +75,7 @@ test("skips non-track entries and deduplicates by id", async () => {
               subtitle: "Artist One",
               duration: 180_000,
               entityType: "track",
+              isPlayable: true,
             },
             {
               uri: "spotify:track:track1id00000000000000",
@@ -81,6 +83,7 @@ test("skips non-track entries and deduplicates by id", async () => {
               subtitle: "Artist One",
               duration: 180_000,
               entityType: "track",
+              isPlayable: true,
             },
           ]),
         ),
@@ -88,8 +91,44 @@ test("skips non-track entries and deduplicates by id", async () => {
       )) as typeof fetch,
     async () => {
       const client = new SpotifyClient();
-      const tracks = await client.getPlaylistTracks("abc");
+      const { tracks } = await client.getPlaylistTracks("abc");
       assert.equal(tracks.length, 1);
+    },
+  );
+});
+
+test("skips country-restricted tracks that Spotify blanks out in the embed page", async () => {
+  await withFetch(
+    (async () =>
+      new Response(
+        embedHtml(
+          playlistNextData([
+            {
+              uri: "spotify:track:restricted000000000000",
+              title: "",
+              subtitle: "",
+              duration: 0,
+              entityType: "track",
+              isPlayable: false,
+            },
+            {
+              uri: "spotify:track:track1id00000000000000",
+              title: "Song One",
+              subtitle: "Artist One",
+              duration: 180_000,
+              entityType: "track",
+              isPlayable: true,
+            },
+          ]),
+        ),
+        { status: 200 },
+      )) as typeof fetch,
+    async () => {
+      const client = new SpotifyClient();
+      const { tracks, unavailableCount } = await client.getPlaylistTracks("abc");
+      assert.equal(tracks.length, 1);
+      assert.equal(tracks[0]?.id, "track1id00000000000000");
+      assert.equal(unavailableCount, 1);
     },
   );
 });
@@ -101,13 +140,14 @@ test("exposes the embed track-list cap so callers can warn on large playlists", 
     subtitle: "Artist",
     duration: 180_000,
     entityType: "track",
+    isPlayable: true,
   }));
 
   await withFetch(
     (async () => new Response(embedHtml(playlistNextData(trackList)), { status: 200 })) as typeof fetch,
     async () => {
       const client = new SpotifyClient();
-      const tracks = await client.getPlaylistTracks("abc");
+      const { tracks } = await client.getPlaylistTracks("abc");
       assert.equal(tracks.length, EMBED_TRACK_LIST_CAP);
     },
   );

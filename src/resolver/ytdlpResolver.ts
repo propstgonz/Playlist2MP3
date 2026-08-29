@@ -14,8 +14,8 @@ export interface YtDlpSearchEntry {
   readonly duration: number | null;
 }
 
-interface YtDlpSearchResult {
-  readonly entries?: readonly YtDlpSearchEntry[];
+export interface YtDlpSearchResult {
+  readonly entries?: readonly (YtDlpSearchEntry | null)[];
 }
 
 export class ResolutionError extends Error {
@@ -83,6 +83,55 @@ export function selectBestCandidate(
   return bestScore === -Infinity ? undefined : bestEntry;
 }
 
+export function extractPartialStdout(error: unknown): string | undefined {
+  if (!error || typeof error !== "object" || !("stdout" in error)) {
+    return undefined;
+  }
+  const stdout = (error as { stdout: unknown }).stdout;
+  if (typeof stdout !== "string" || stdout.trim() === "") {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(stdout) as YtDlpSearchResult;
+    return parsed.entries?.some((entry) => entry !== null) ? stdout : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function pickBestFromSearchResult(
+  parsed: YtDlpSearchResult,
+  track: SpotifyTrack,
+  query: string,
+): ResolvedSource {
+  try {
+    const entries = (parsed.entries ?? []).filter(
+      (entry): entry is YtDlpSearchEntry => entry !== null,
+    );
+    if (entries.length === 0) {
+      throw new ResolutionError(`No search results found for "${query}"`);
+    }
+
+    const bestEntry = selectBestCandidate(entries, track);
+    if (!bestEntry) {
+      throw new ResolutionError(`No acceptable match found for "${query}"`);
+    }
+
+    return {
+      sourceUrl: bestEntry.webpage_url,
+      sourceTitle: bestEntry.title,
+      durationSec: bestEntry.duration ?? 0,
+    };
+  } catch (error) {
+    if (error instanceof ResolutionError) {
+      throw error;
+    }
+    throw new ResolutionError(
+      `Unexpected error while selecting a match for "${query}": ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 export async function resolveTrack(
   track: SpotifyTrack,
   signal?: AbortSignal,
@@ -99,9 +148,13 @@ export async function resolveTrack(
     );
     stdout = result.stdout;
   } catch (error) {
-    throw new ResolutionError(
-      `yt-dlp search failed for "${query}": ${error instanceof Error ? error.message : String(error)}`,
-    );
+    const partialStdout = extractPartialStdout(error);
+    if (!partialStdout) {
+      throw new ResolutionError(
+        `yt-dlp search failed for "${query}": ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    stdout = partialStdout;
   }
 
   let parsed: YtDlpSearchResult;
@@ -111,19 +164,5 @@ export async function resolveTrack(
     throw new ResolutionError(`yt-dlp returned invalid JSON for query "${query}"`);
   }
 
-  const entries = parsed.entries ?? [];
-  if (entries.length === 0) {
-    throw new ResolutionError(`No search results found for "${query}"`);
-  }
-
-  const bestEntry = selectBestCandidate(entries, track);
-  if (!bestEntry) {
-    throw new ResolutionError(`No acceptable match found for "${query}"`);
-  }
-
-  return {
-    sourceUrl: bestEntry.webpage_url,
-    sourceTitle: bestEntry.title,
-    durationSec: bestEntry.duration ?? 0,
-  };
+  return pickBestFromSearchResult(parsed, track, query);
 }

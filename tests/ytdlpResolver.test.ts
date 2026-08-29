@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import {
   scoreCandidate,
   selectBestCandidate,
+  extractPartialStdout,
+  pickBestFromSearchResult,
+  ResolutionError,
   type YtDlpSearchEntry,
 } from "../src/resolver/ytdlpResolver.js";
 import type { SpotifyTrack } from "../src/types/index.js";
@@ -93,4 +96,57 @@ test("selectBestCandidate returns undefined when every candidate is rejected", (
 
 test("selectBestCandidate returns undefined for an empty list", () => {
   assert.equal(selectBestCandidate([], makeTrack()), undefined);
+});
+
+test("extractPartialStdout recovers usable results from a yt-dlp error carrying valid JSON", () => {
+  const error = Object.assign(new Error("Command failed"), {
+    stdout: JSON.stringify({ entries: [{ webpage_url: "u", title: "t", duration: 100 }] }),
+  });
+  assert.equal(extractPartialStdout(error), error.stdout);
+});
+
+test("extractPartialStdout returns undefined when stdout has no entries", () => {
+  const error = Object.assign(new Error("Command failed"), {
+    stdout: JSON.stringify({ entries: [] }),
+  });
+  assert.equal(extractPartialStdout(error), undefined);
+});
+
+test("extractPartialStdout returns undefined when stdout is not valid JSON", () => {
+  const error = Object.assign(new Error("Command failed"), { stdout: "not json" });
+  assert.equal(extractPartialStdout(error), undefined);
+});
+
+test("extractPartialStdout returns undefined when the error carries no stdout", () => {
+  assert.equal(extractPartialStdout(new Error("Command failed")), undefined);
+});
+
+test("extractPartialStdout returns undefined for a non-error value", () => {
+  assert.equal(extractPartialStdout("not an error"), undefined);
+});
+
+test("pickBestFromSearchResult skips a null entry (unavailable video) and still picks a match", () => {
+  const track = makeTrack();
+  const result = pickBestFromSearchResult(
+    {
+      entries: [
+        null,
+        { webpage_url: "u2", title: "Queen - Bohemian Rhapsody", duration: 354 },
+      ],
+    },
+    track,
+    "Queen Bohemian Rhapsody",
+  );
+  assert.equal(result.sourceUrl, "u2");
+});
+
+test("pickBestFromSearchResult throws ResolutionError when every entry is null", () => {
+  assert.throws(
+    () => pickBestFromSearchResult({ entries: [null, null] }, makeTrack(), "query"),
+    ResolutionError,
+  );
+});
+
+test("pickBestFromSearchResult throws ResolutionError when entries is missing", () => {
+  assert.throws(() => pickBestFromSearchResult({}, makeTrack(), "query"), ResolutionError);
 });

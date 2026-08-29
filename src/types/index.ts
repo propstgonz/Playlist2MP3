@@ -49,6 +49,7 @@ export interface PlaylistSummary {
   readonly playlistId: string;
   readonly playlistName: string;
   readonly tracksFound: number;
+  readonly tracksUnavailable: number;
   readonly tracksNew: number;
   readonly downloaded: number;
   readonly skipped: number;

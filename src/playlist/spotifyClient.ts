@@ -23,6 +23,7 @@ interface EmbedPlaylistTrackItem {
   readonly subtitle: string;
   readonly duration: number;
   readonly entityType: string;
+  readonly isPlayable: boolean;
 }
 
 interface EmbedPlaylistEntity {
@@ -51,11 +52,16 @@ interface EmbedNextData<T> {
   };
 }
 
+export interface PlaylistTracksResult {
+  readonly tracks: readonly SpotifyTrack[];
+  readonly unavailableCount: number;
+}
+
 export interface PlaylistTrackSource {
   getPlaylistTracks(
     playlistId: string,
     signal?: AbortSignal,
-  ): Promise<readonly SpotifyTrack[]>;
+  ): Promise<PlaylistTracksResult>;
   getTrackDetails?(track: SpotifyTrack, signal?: AbortSignal): Promise<SpotifyTrack>;
 }
 
@@ -105,15 +111,20 @@ export class SpotifyClient implements PlaylistTrackSource {
   async getPlaylistTracks(
     playlistId: string,
     signal?: AbortSignal,
-  ): Promise<readonly SpotifyTrack[]> {
+  ): Promise<PlaylistTracksResult> {
     const entity = await fetchEmbedEntity<EmbedPlaylistEntity>(
       `${EMBED_BASE}/playlist/${playlistId}`,
       signal,
     );
 
     const seen = new Map<string, SpotifyTrack>();
+    let unavailableCount = 0;
     entity.trackList.forEach((item, index) => {
       if (item.entityType !== "track") {
+        return;
+      }
+      if (!item.isPlayable || item.title.trim() === "") {
+        unavailableCount += 1;
         return;
       }
       const match = TRACK_URI_PATTERN.exec(item.uri);
@@ -132,7 +143,7 @@ export class SpotifyClient implements PlaylistTrackSource {
       });
     });
 
-    return [...seen.values()];
+    return { tracks: [...seen.values()], unavailableCount };
   }
 
   async getTrackDetails(track: SpotifyTrack, signal?: AbortSignal): Promise<SpotifyTrack> {

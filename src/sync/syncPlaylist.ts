@@ -45,8 +45,16 @@ export async function syncPlaylist(
   try {
     await ensurePlaylistDir(config);
 
-    const tracks = await deps.spotifyClient.getPlaylistTracks(config.spotifyPlaylistId, signal);
-    logger.info(`Found ${tracks.length} tracks`);
+    const { tracks, unavailableCount } = await deps.spotifyClient.getPlaylistTracks(
+      config.spotifyPlaylistId,
+      signal,
+    );
+    logger.info(
+      `Found ${tracks.length} tracks` +
+        (unavailableCount > 0
+          ? ` (${unavailableCount} more listed in the playlist are unavailable — likely removed from Spotify's catalog — and were skipped)`
+          : ""),
+    );
     if (tracks.length >= EMBED_TRACK_LIST_CAP) {
       logger.warn(
         `This playlist has ${tracks.length} tracks, which may hit the ${EMBED_TRACK_LIST_CAP}-track limit of the ` +
@@ -111,6 +119,7 @@ export async function syncPlaylist(
       playlistId: config.id,
       playlistName: config.name,
       tracksFound: tracks.length,
+      tracksUnavailable: unavailableCount,
       tracksNew: missingTracks.length,
       downloaded,
       skipped,
@@ -124,6 +133,7 @@ export async function syncPlaylist(
       playlistId: config.id,
       playlistName: config.name,
       tracksFound: 0,
+      tracksUnavailable: 0,
       tracksNew: 0,
       downloaded: 0,
       skipped: 0,
