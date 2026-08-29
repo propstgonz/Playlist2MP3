@@ -15,7 +15,6 @@ function makeTrack(): SpotifyTrack {
     id: "track-1",
     title: "Title",
     artists: ["Artist"],
-    album: "Album",
     durationMs: 200_000,
     trackNumber: 1,
     releaseYear: 2020,

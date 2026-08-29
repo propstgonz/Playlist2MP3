@@ -15,7 +15,6 @@ function makeTrack(overrides: Partial<SpotifyTrack> = {}): SpotifyTrack {
     id: "track-id-123",
     title: "Café del Mar",
     artists: ["Énergie"],
-    album: "Album",
     durationMs: 200_000,
     trackNumber: 1,
     releaseYear: 2020,

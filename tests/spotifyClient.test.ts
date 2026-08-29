@@ -1,11 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SpotifyClient } from "../src/playlist/spotifyClient.js";
+import { SpotifyClient, EMBED_TRACK_LIST_CAP } from "../src/playlist/spotifyClient.js";
 import { NonRetryableError } from "../src/utils/retry.js";
-import type { SpotifyAuthClient } from "../src/playlist/spotifyAuth.js";
 
-function fakeAuth(): SpotifyAuthClient {
-  return { getAccessToken: async () => "fake-token" } as unknown as SpotifyAuthClient;
+function embedHtml(nextData: unknown): string {
+  return `<html><body><script id="__NEXT_DATA__" type="application/json">${JSON.stringify(
+    nextData,
+  )}</script></body></html>`;
+}
+
+function playlistNextData(trackList: readonly unknown[]): unknown {
+  return { props: { pageProps: { state: { data: { entity: { trackList } } } } } };
+}
+
+function trackNextData(entity: unknown): unknown {
+  return { props: { pageProps: { state: { data: { entity } } } } };
 }
 
 function withFetch(handler: typeof fetch, fn: () => Promise<void>): Promise<void> {
@@ -16,107 +25,149 @@ function withFetch(handler: typeof fetch, fn: () => Promise<void>): Promise<void
   });
 }
 
-test("returns tracks and stops paginating when next is null", async () => {
+test("parses tracks from the playlist embed page", async () => {
   await withFetch(
     (async () =>
       new Response(
-        JSON.stringify({
-          items: [
+        embedHtml(
+          playlistNextData([
             {
-              track: {
-                id: "t1",
-                name: "Song",
-                artists: [{ name: "Artist" }],
-                album: { name: "Album", release_date: "2020-01-01", images: [{ url: "cover" }] },
-                duration_ms: 100_000,
-                track_number: 1,
-                is_local: false,
-              },
+              uri: "spotify:track:track1id00000000000000",
+              title: "Song One",
+              subtitle: "Artist One",
+              duration: 180_000,
+              entityType: "track",
             },
-          ],
-          next: null,
-        }),
+          ]),
+        ),
         { status: 200 },
       )) as typeof fetch,
     async () => {
-      const client = new SpotifyClient(fakeAuth());
+      const client = new SpotifyClient();
       const tracks = await client.getPlaylistTracks("abc");
       assert.equal(tracks.length, 1);
-      assert.equal(tracks[0]?.id, "t1");
+      assert.equal(tracks[0]?.id, "track1id00000000000000");
+      assert.equal(tracks[0]?.title, "Song One");
+      assert.deepEqual(tracks[0]?.artists, ["Artist One"]);
+      assert.equal(tracks[0]?.durationMs, 180_000);
+      assert.equal(tracks[0]?.trackNumber, 1);
     },
   );
 });
 
-test("filters out local tracks and null items", async () => {
+test("skips non-track entries and deduplicates by id", async () => {
   await withFetch(
     (async () =>
       new Response(
-        JSON.stringify({
-          items: [
-            { track: null },
+        embedHtml(
+          playlistNextData([
             {
-              track: {
-                id: "t1",
-                name: "Local",
-                artists: [{ name: "Artist" }],
-                album: { name: "Album" },
-                duration_ms: 1000,
-                track_number: 1,
-                is_local: true,
-              },
+              uri: "spotify:episode:podcast0000000000000",
+              title: "A Podcast",
+              subtitle: "Host",
+              duration: 1_000_000,
+              entityType: "episode",
             },
-          ],
-          next: null,
-        }),
+            {
+              uri: "spotify:track:track1id00000000000000",
+              title: "Song One",
+              subtitle: "Artist One",
+              duration: 180_000,
+              entityType: "track",
+            },
+            {
+              uri: "spotify:track:track1id00000000000000",
+              title: "Song One",
+              subtitle: "Artist One",
+              duration: 180_000,
+              entityType: "track",
+            },
+          ]),
+        ),
         { status: 200 },
       )) as typeof fetch,
     async () => {
-      const client = new SpotifyClient(fakeAuth());
+      const client = new SpotifyClient();
       const tracks = await client.getPlaylistTracks("abc");
-      assert.equal(tracks.length, 0);
+      assert.equal(tracks.length, 1);
     },
   );
 });
 
-test("throws a non-retryable error with a 404", async () => {
+test("exposes the embed track-list cap so callers can warn on large playlists", async () => {
+  const trackList = Array.from({ length: EMBED_TRACK_LIST_CAP }, (_, i) => ({
+    uri: `spotify:track:id${String(i).padStart(20, "0")}`,
+    title: `Song ${i}`,
+    subtitle: "Artist",
+    duration: 180_000,
+    entityType: "track",
+  }));
+
+  await withFetch(
+    (async () => new Response(embedHtml(playlistNextData(trackList)), { status: 200 })) as typeof fetch,
+    async () => {
+      const client = new SpotifyClient();
+      const tracks = await client.getPlaylistTracks("abc");
+      assert.equal(tracks.length, EMBED_TRACK_LIST_CAP);
+    },
+  );
+});
+
+test("throws a non-retryable error on 404", async () => {
   await withFetch(
     (async () => new Response("", { status: 404 })) as typeof fetch,
     async () => {
-      const client = new SpotifyClient(fakeAuth());
+      const client = new SpotifyClient();
       await assert.rejects(client.getPlaylistTracks("missing"), NonRetryableError);
     },
   );
 });
 
-test("throws a clear non-retryable error explaining the 403 development-mode restriction", async () => {
+test("throws a non-retryable error when the page has no embedded data", async () => {
   await withFetch(
-    (async () => new Response("", { status: 403 })) as typeof fetch,
+    (async () => new Response("<html><body>no data here</body></html>", { status: 200 })) as typeof fetch,
     async () => {
-      const client = new SpotifyClient(fakeAuth());
-      await assert.rejects(
-        client.getPlaylistTracks("abc"),
-        (error: unknown) =>
-          error instanceof NonRetryableError && error.message.includes("Development Mode"),
-      );
+      const client = new SpotifyClient();
+      await assert.rejects(client.getPlaylistTracks("abc"), NonRetryableError);
     },
   );
 });
 
-test("retries after a 429 and eventually succeeds", async () => {
-  let calls = 0;
+test("getTrackDetails enriches release year, cover art and artist list", async () => {
   await withFetch(
-    (async () => {
-      calls += 1;
-      if (calls === 1) {
-        return new Response("", { status: 429, headers: { "Retry-After": "0" } });
-      }
-      return new Response(JSON.stringify({ items: [], next: null }), { status: 200 });
-    }) as typeof fetch,
+    (async () =>
+      new Response(
+        embedHtml(
+          trackNextData({
+            artists: [{ name: "Real Artist Name" }],
+            releaseDate: { isoString: "1966-04-15T00:00:00Z" },
+            visualIdentity: {
+              image: [
+                { url: "small.jpg", maxWidth: 64 },
+                { url: "large.jpg", maxWidth: 640 },
+                { url: "medium.jpg", maxWidth: 300 },
+              ],
+            },
+          }),
+        ),
+        { status: 200 },
+      )) as typeof fetch,
     async () => {
-      const client = new SpotifyClient(fakeAuth());
-      const tracks = await client.getPlaylistTracks("abc");
-      assert.equal(tracks.length, 0);
-      assert.equal(calls, 2);
+      const client = new SpotifyClient();
+      const enriched = await client.getTrackDetails({
+        id: "t1",
+        title: "Song",
+        artists: ["Fallback Artist"],
+        durationMs: 100,
+        trackNumber: 1,
+        releaseYear: undefined,
+        coverUrl: undefined,
+      });
+      assert.deepEqual(enriched.artists, ["Real Artist Name"]);
+      assert.equal(enriched.releaseYear, 1966);
+      assert.equal(enriched.coverUrl, "large.jpg");
+      assert.equal(enriched.id, "t1");
+      assert.equal(enriched.trackNumber, 1);
     },
   );
 });

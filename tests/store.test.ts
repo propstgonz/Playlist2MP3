@@ -16,7 +16,6 @@ function makeTrack(id: string, overrides: Partial<SpotifyTrack> = {}): SpotifyTr
     id,
     title: "Title",
     artists: ["Artist"],
-    album: "Album",
     durationMs: 200_000,
     trackNumber: 1,
     releaseYear: 2020,

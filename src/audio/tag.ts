@@ -35,7 +35,6 @@ export async function tagMp3(
   const tags: NodeID3.Tags = {
     title: track.title,
     artist: track.artists.join(", "),
-    album: track.album,
     trackNumber: String(track.trackNumber),
     ...(track.releaseYear !== undefined ? { year: String(track.releaseYear) } : {}),
     ...(cover

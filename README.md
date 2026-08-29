@@ -10,16 +10,22 @@ Each playlist is configured independently via environment variables: a name, a S
 - Incremental sync: only missing tracks are downloaded on every cycle.
 - Filesystem is the only source of truth for what has already been downloaded — no database.
 - Original Spotify track and artist names are preserved in file names (only filesystem-illegal characters are sanitized).
-- ID3 tags (title, artist, album, track number, year, cover art) are written from Spotify metadata, not from the download source.
+- ID3 tags (title, artist, track number, year, cover art) are written from Spotify metadata, not from the download source.
 - Bounded global download concurrency.
 - One failing playlist never stops the others from syncing.
 - Clean shutdown on `SIGTERM`/`SIGINT`: no new downloads start, in-flight ones are allowed to finish.
+- **No Spotify account, developer app, or subscription of any kind is required.** Playlist and track metadata is read from Spotify's public embed pages (`open.spotify.com/embed/...`), the same data Spotify serves to render an embedded playlist widget on any website, with no authentication.
 
 ## Requirements
 
-- A Spotify application (Client ID + Client Secret) using the Client Credentials flow. Create one at the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
-- Only **public** playlists are supported, since Client Credentials has no user context.
+- Only **public** playlists are supported, since there is no user login involved.
 - Docker and Docker Compose for running the service.
+
+## Known limitation: 100 tracks per playlist
+
+Spotify's public embed page returns at most 100 tracks per playlist; there is no documented way to page past that without emulating a full logged-in web player session. If a configured playlist has 100 or more tracks, the service logs a warning and only the first 100 are considered for syncing. This is a hard constraint of not requiring any account or subscription, not a bug — see `EMBED_TRACK_LIST_CAP` in `src/playlist/spotifyClient.ts`.
+
+This project relies on an undocumented, unofficial Spotify page structure. Spotify could change it at any time without notice, which would break metadata fetching until the scraper is updated.
 
 ## Configuration
 
@@ -30,9 +36,6 @@ SYNC_INTERVAL=86400
 DOWNLOAD_CONCURRENCY=2
 TEMP_DIR=/tmp/playlist2mp3
 LOG_LEVEL=info
-
-SPOTIFY_CLIENT_ID=your-client-id
-SPOTIFY_CLIENT_SECRET=your-client-secret
 
 PLAYLIST_1_NAME=Rock
 PLAYLIST_1_URL=https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M
@@ -76,7 +79,7 @@ Tests run entirely offline: no real network calls, no real downloads, no depende
 
 - `src/index.ts` — main process and lifecycle.
 - `src/config/` — environment parsing and validation.
-- `src/playlist/` — Spotify Web API client and authentication.
+- `src/playlist/` — Spotify metadata client (public embed pages, no authentication).
 - `src/sync/` — per-playlist and per-cycle synchronization orchestration.
 - `src/resolver/` — matches Spotify tracks to a downloadable source via `yt-dlp` search.
 - `src/downloader/` — download execution and the per-track pipeline state machine.

@@ -16,7 +16,6 @@ function makeTrack(id: string, title: string): SpotifyTrack {
     id,
     title,
     artists: ["Artist"],
-    album: "Album",
     durationMs: 200_000,
     trackNumber: 1,
     releaseYear: 2020,
@@ -202,8 +201,6 @@ test("a failing playlist does not prevent other playlists from completing", asyn
         syncIntervalSec: 3600,
         downloadConcurrency: 2,
         tempDir,
-        spotifyClientId: "id",
-        spotifyClientSecret: "secret",
         playlists: [
           {
             id: "1",
