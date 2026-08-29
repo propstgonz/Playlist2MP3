@@ -8,7 +8,7 @@ const DURATION_TOLERANCE_SEC = 15;
 const SEARCH_TIMEOUT_MS = 30_000;
 const UNWANTED_KEYWORDS = ["live", "cover", "remix", "karaoke", "8d audio", "reaction"];
 
-interface YtDlpSearchEntry {
+export interface YtDlpSearchEntry {
   readonly webpage_url: string;
   readonly title: string;
   readonly duration: number | null;
@@ -33,7 +33,7 @@ function containsUnwantedKeyword(candidateTitle: string, originalTitle: string):
   );
 }
 
-function scoreCandidate(entry: YtDlpSearchEntry, track: SpotifyTrack): number {
+export function scoreCandidate(entry: YtDlpSearchEntry, track: SpotifyTrack): number {
   if (entry.duration === null) {
     return -Infinity;
   }
@@ -65,6 +65,22 @@ function scoreCandidate(entry: YtDlpSearchEntry, track: SpotifyTrack): number {
   }
 
   return score;
+}
+
+export function selectBestCandidate(
+  entries: readonly YtDlpSearchEntry[],
+  track: SpotifyTrack,
+): YtDlpSearchEntry | undefined {
+  let bestEntry: YtDlpSearchEntry | undefined;
+  let bestScore = -Infinity;
+  for (const entry of entries) {
+    const score = scoreCandidate(entry, track);
+    if (score > bestScore) {
+      bestScore = score;
+      bestEntry = entry;
+    }
+  }
+  return bestScore === -Infinity ? undefined : bestEntry;
 }
 
 export async function resolveTrack(
@@ -100,17 +116,8 @@ export async function resolveTrack(
     throw new ResolutionError(`No search results found for "${query}"`);
   }
 
-  let bestEntry: YtDlpSearchEntry | undefined;
-  let bestScore = -Infinity;
-  for (const entry of entries) {
-    const score = scoreCandidate(entry, track);
-    if (score > bestScore) {
-      bestScore = score;
-      bestEntry = entry;
-    }
-  }
-
-  if (!bestEntry || bestScore === -Infinity) {
+  const bestEntry = selectBestCandidate(entries, track);
+  if (!bestEntry) {
     throw new ResolutionError(`No acceptable match found for "${query}"`);
   }
 

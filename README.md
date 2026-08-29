@@ -1,5 +1,7 @@
 # Playlist2MP3
 
+[![CI](https://github.com/propstgonz/Playlist2MP3/actions/workflows/ci.yml/badge.svg)](https://github.com/propstgonz/Playlist2MP3/actions/workflows/ci.yml)
+
 A headless, containerized service that incrementally mirrors one or more public Spotify playlists into local MP3 collections.
 
 Each playlist is configured independently via environment variables: a name, a Spotify playlist URL, and a root destination directory. The service runs a single long-lived process that periodically checks every configured playlist for tracks that are not yet present on disk, resolves and downloads only those, converts them to MP3, tags them with the original Spotify metadata, and writes them to `<PLAYLIST_DIR>/<PLAYLIST_NAME>/`.
