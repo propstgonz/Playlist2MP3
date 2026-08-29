@@ -34,6 +34,8 @@ This project relies on an undocumented, unofficial Spotify page structure. Spoti
 Copy `.env.example` to `.env` and fill in your values:
 
 ```env
+MUSIC_HOST_DIR=/media/raid/music
+
 SYNC_INTERVAL=86400
 DOWNLOAD_CONCURRENCY=2
 TEMP_DIR=/tmp/playlist2mp3
@@ -41,8 +43,10 @@ LOG_LEVEL=info
 
 PLAYLIST_1_NAME=Rock
 PLAYLIST_1_URL=https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M
-PLAYLIST_1_DIR=/media/raid/music
+PLAYLIST_1_DIR=/music
 ```
+
+`MUSIC_HOST_DIR` is the real path on your machine that Docker Compose mounts into the container at the fixed path `/music` (see `docker-compose.yml`). Every `PLAYLIST_N_DIR` should point at `/music` — that's the container-side path, not `MUSIC_HOST_DIR` itself.
 
 Add as many playlists as needed following the `PLAYLIST_N_NAME` / `PLAYLIST_N_URL` / `PLAYLIST_N_DIR` pattern, incrementing `N`. All three fields are required for each entry; an incomplete entry fails configuration validation at startup with a clear error.
 
@@ -50,7 +54,7 @@ Add as many playlists as needed following the `PLAYLIST_N_NAME` / `PLAYLIST_N_UR
 
 ## Running with Docker Compose
 
-Update the volume in `docker-compose.yml` to match your actual music storage path, then:
+Only `.env` needs editing — `docker-compose.yml` itself never needs to change:
 
 ```bash
 docker compose up -d --build
