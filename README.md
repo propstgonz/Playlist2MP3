@@ -12,7 +12,7 @@ Each playlist is configured independently via environment variables: a name, a S
 - Incremental sync: only missing tracks are downloaded on every cycle.
 - Full playlist pagination: playlists of any size are fetched completely, not just the first 100 tracks.
 - Optional random public playlist discovery: pulls in a different public Spotify playlist each cycle.
-- Optional local storage quota (`MAX_SIZE`): stops starting new downloads once configured directories reach the limit.
+- Optional local storage quota (`MAX_SIZE`): skips a sync cycle's downloads when configured directories are already at/above the limit.
 - Filesystem is the only source of truth for what has already been downloaded — no database.
 - Original Spotify track and artist names are preserved in file names (only filesystem-illegal characters are sanitized).
 - ID3 tags (title, artist, track number, year, cover art) are written from Spotify metadata, not from the download source.
