@@ -13,7 +13,7 @@ export async function pickRandomPlaylistConfig(
   const found = await spotifyClient.findRandomPublicPlaylist(signal);
   return {
     id: "random",
-    name: found.playlistName,
+    name: `${found.playlistName} (${found.playlistId.slice(0, 8)})`,
     url: `https://open.spotify.com/playlist/${found.playlistId}`,
     spotifyPlaylistId: found.playlistId,
     rootDir: randomPlaylist.dir,
