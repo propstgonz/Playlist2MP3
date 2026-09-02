@@ -38,7 +38,9 @@ export async function runSyncCycle(
   const downloadSemaphore = new Semaphore(config.downloadConcurrency);
 
   const playlists = [...config.playlists];
-  if (config.randomPlaylist) {
+
+  let quotaExceeded = await isStorageQuotaExceeded(config.maxSizeBytes, playlists);
+  if (!quotaExceeded && config.randomPlaylist) {
     try {
       const picked = await pickRandomPlaylistConfig(spotifyClient, config.randomPlaylist, signal);
       logger.info(`Random playlist selected for this cycle: "${picked.name}"`);
@@ -47,9 +49,8 @@ export async function runSyncCycle(
       const reason = error instanceof Error ? error.message : String(error);
       logger.warn(`Could not select a random public playlist this cycle: ${reason}`);
     }
+    quotaExceeded = await isStorageQuotaExceeded(config.maxSizeBytes, playlists);
   }
-
-  const quotaExceeded = await isStorageQuotaExceeded(config.maxSizeBytes, playlists);
   if (quotaExceeded) {
     logger.error(
       `Storage quota reached (MAX_SIZE=${formatBytes(config.maxSizeBytes)}). Skipping downloads this cycle.`,
