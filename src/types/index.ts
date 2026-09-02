@@ -6,11 +6,17 @@ export interface PlaylistConfig {
   readonly rootDir: string;
 }
 
+export interface RandomPlaylistConfig {
+  readonly dir: string;
+}
+
 export interface AppConfig {
   readonly syncIntervalSec: number;
   readonly downloadConcurrency: number;
   readonly tempDir: string;
+  readonly maxSizeBytes: number;
   readonly playlists: readonly PlaylistConfig[];
+  readonly randomPlaylist: RandomPlaylistConfig | undefined;
 }
 
 export interface SpotifyTrack {

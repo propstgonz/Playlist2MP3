@@ -1,5 +1,5 @@
-import { mkdir, rename, copyFile, unlink, stat } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, rename, copyFile, unlink, stat, readdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { PlaylistConfig, SpotifyTrack } from "../types/index.js";
 import {
   buildFileName,
@@ -80,6 +80,46 @@ export async function commitFile(tempPath: string, finalPath: string): Promise<b
     }
   }
   return true;
+}
+
+export async function getDirectorySizeBytes(dir: string): Promise<number> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return 0;
+    }
+    throw error;
+  }
+
+  let total = 0;
+  for (const entry of entries) {
+    const entryPath = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      total += await getDirectorySizeBytes(entryPath);
+    } else if (entry.isFile()) {
+      total += (await stat(entryPath)).size;
+    }
+  }
+  return total;
+}
+
+export async function isStorageQuotaExceeded(
+  maxSizeBytes: number,
+  playlists: readonly PlaylistConfig[],
+): Promise<boolean> {
+  if (maxSizeBytes <= 0) {
+    return false;
+  }
+  let total = 0;
+  for (const playlist of playlists) {
+    total += await getDirectorySizeBytes(resolvePlaylistDir(playlist));
+    if (total >= maxSizeBytes) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export { buildFileName, buildFileNameWithSuffix, resolvePlaylistDir, resolveTrackPath };

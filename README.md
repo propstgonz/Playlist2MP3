@@ -47,6 +47,11 @@ Keep this window open; you'll use it in Step 4.
 5. Optionally change `PLAYLIST_1_NAME` to whatever you want that playlist's folder to be called.
 6. Save the file and close Notepad.
 
+- `MAX_SIZE` caps the combined size of all configured playlist directories (including the random one, if enabled). Accepts a plain byte count or a number with a `K`, `M`, `G` or `T` suffix, e.g. `500M` or `1G`. Leave it empty, unset, or `0` for unlimited storage (the default). The check runs once at the start of every sync cycle, before any track is fetched or downloaded; if the limit is already reached, that cycle's downloads are skipped and a clear error is logged, but the service keeps running and retries on the next cycle.
+- `RANDOM_PLAYLIST` (`true`/`false`, default `false`) picks a different public Spotify playlist at random at the start of every sync cycle and syncs it alongside the playlists configured with `PLAYLIST_N_*`, using the same incremental, no-duplicate-download logic. Requires `RANDOM_PLAYLIST_DIR`. If no random playlist can be found in a given cycle, a warning is logged and the rest of the cycle proceeds normally.
+- `RANDOM_PLAYLIST_DIR` is the root directory the randomly picked playlist is written under (same convention as `PLAYLIST_N_DIR`: a subfolder named after the picked playlist is created inside it). Required only when `RANDOM_PLAYLIST=true`.
+
+`MUSIC_HOST_DIR` is the real path on your machine that Docker Compose mounts into the container at the fixed path `/music` (see `docker-compose.yml`). Every `PLAYLIST_N_DIR` should point at `/music` — that's the container-side path, not `MUSIC_HOST_DIR` itself.
 Your playlist must be **public** in Spotify (not private) for this to work, since there's no login step involved.
 
 ## Step 4 — Start it
@@ -80,7 +85,7 @@ From now on, it keeps running quietly in the background and checks your playlist
 
 ## Good to know
 
-- **100 tracks per playlist, max.** Reading a playlist without logging in only shows its first 100 tracks — a limit of not needing an account, not a bug. Bigger playlists log a warning about this.
+- Full playlist pagination is supported, so playlists larger than 100 tracks are fetched completely.
 - Spotify sometimes removes a track after it's been added to a playlist. The service notices and skips those automatically, and says so in its logs.
 - This relies on how Spotify's public playlist pages happen to be built today. If Spotify changes that, it could stop working until this project is updated to match.
 
@@ -93,12 +98,18 @@ Everything above is controlled through `.env`; `docker-compose.yml` itself never
 | `MUSIC_HOST_DIR` | Real folder on your machine, mounted into the container. |
 | `SYNC_INTERVAL` | Seconds between sync cycles. |
 | `DOWNLOAD_CONCURRENCY` | Max tracks downloaded at once. |
+| `MAX_SIZE` | Optional quota for total bytes in configured playlist directories. |
+| `RANDOM_PLAYLIST` | Enable syncing one random public playlist per cycle. |
+| `RANDOM_PLAYLIST_DIR` | Root dir used when `RANDOM_PLAYLIST=true`. |
 | `PLAYLIST_N_NAME` / `_URL` / `_DIR` | One playlist per number; `_DIR` should always be `/music`. |
 
 Features:
 
 - Multiple playlists at once, each in its own folder.
 - Only downloads what's missing — safe to stop and restart anytime.
+- Full playlist pagination with no 100-track cap.
+- Optional random public playlist sync each cycle.
+- Optional storage quota checks before downloads.
 - Keeps original track/artist names (only filesystem-illegal characters get replaced).
 - Tags every MP3 (title, artist, track number, year, cover art) from Spotify's own metadata.
 - One playlist failing never stops the others.

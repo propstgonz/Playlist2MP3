@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, readdir, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { syncPlaylist } from "../src/sync/syncPlaylist.js";
@@ -205,6 +205,8 @@ test("a failing playlist does not prevent other playlists from completing", asyn
         syncIntervalSec: 3600,
         downloadConcurrency: 2,
         tempDir,
+        maxSizeBytes: 0,
+        randomPlaylist: undefined,
         playlists: [
           {
             id: "1",
@@ -336,6 +338,8 @@ test("a slow playlist does not block a faster playlist from completing", async (
         syncIntervalSec: 3600,
         downloadConcurrency: 2,
         tempDir,
+        maxSizeBytes: 0,
+        randomPlaylist: undefined,
         playlists: [slowConfig, fastConfig],
       };
 
@@ -385,3 +389,96 @@ test("a track removed from Spotify's catalog is reported as unavailable and does
   });
 });
 
+test("a storage quota already at or above MAX_SIZE skips downloads for the cycle", async () => {
+  await withTempDir(async (musicRoot) => {
+    await withTempDir(async (tempDir) => {
+      const config: AppConfig = {
+        syncIntervalSec: 3600,
+        downloadConcurrency: 2,
+        tempDir,
+        maxSizeBytes: 1,
+        randomPlaylist: undefined,
+        playlists: [
+          {
+            id: "1",
+            name: "Rock",
+            url: "https://open.spotify.com/playlist/abc",
+            spotifyPlaylistId: "abc",
+            rootDir: musicRoot,
+          },
+        ],
+      };
+      await mkdir(join(musicRoot, "Rock"), { recursive: true });
+      await writeFile(join(musicRoot, "Rock", "existing.bin"), "already-over-quota");
+
+      const client = fakeSpotifyClient(
+        new Map([["abc", [makeTrack("t1", "Song One")]]]),
+      );
+
+      const summary = await runSyncCycle(config, rootLogger, undefined, {
+        spotifyClient: client,
+        pipelineOps: fakePipelineOps(),
+      });
+
+      const rock = summary.playlistSummaries.find((p) => p.playlistName === "Rock");
+      assert.equal(rock?.downloaded, 0);
+      assert.equal(rock?.error?.includes("quota"), true);
+    });
+  });
+});
+
+test("a configured random playlist is fetched and synced alongside the regular ones", async () => {
+  await withTempDir(async (musicRoot) => {
+    await withTempDir(async (randomRoot) => {
+      await withTempDir(async (tempDir) => {
+        const config: AppConfig = {
+          syncIntervalSec: 3600,
+          downloadConcurrency: 2,
+          tempDir,
+          maxSizeBytes: 0,
+          randomPlaylist: { dir: randomRoot },
+          playlists: [
+            {
+              id: "1",
+              name: "Rock",
+              url: "https://open.spotify.com/playlist/abc",
+              spotifyPlaylistId: "abc",
+              rootDir: musicRoot,
+            },
+          ],
+        };
+
+        const client: PlaylistTrackSource = {
+          getPlaylistTracks: async (playlistId) => ({
+            tracks:
+              playlistId === "abc"
+                ? [makeTrack("t1", "Song One")]
+                : [makeTrack("r1", "Random Song")],
+            unavailableCount: 0,
+          }),
+          findRandomPublicPlaylist: async () => ({
+            playlistId: "random123",
+            playlistName: "Discover Weekly Clone",
+          }),
+        };
+
+        const summary = await runSyncCycle(config, rootLogger, undefined, {
+          spotifyClient: client,
+          pipelineOps: fakePipelineOps(),
+        });
+
+        assert.equal(summary.playlistsProcessed, 2);
+        const random = summary.playlistSummaries.find((p) =>
+          p.playlistName.startsWith("Discover Weekly Clone"),
+        );
+        assert.equal(random?.downloaded, 1);
+        assert.equal(random?.error, undefined);
+
+        const files = await readdir(
+          join(randomRoot, "Discover Weekly Clone (random12)"),
+        );
+        assert.equal(files.length, 1);
+      });
+    });
+  });
+});

@@ -1,4 +1,4 @@
-import type { PlaylistConfig } from "../types/index.js";
+import type { PlaylistConfig, RandomPlaylistConfig } from "../types/index.js";
 
 export class ConfigError extends Error {
   constructor(message: string) {
@@ -103,4 +103,22 @@ export function parsePlaylistConfigs(
   }
 
   return configs;
+}
+
+const TRUTHY_FLAG_VALUES = new Set(["true", "1", "yes"]);
+
+export function parseRandomPlaylistConfig(
+  env: NodeJS.ProcessEnv,
+): RandomPlaylistConfig | undefined {
+  const enabled = TRUTHY_FLAG_VALUES.has((env["RANDOM_PLAYLIST"] ?? "").trim().toLowerCase());
+  if (!enabled) {
+    return undefined;
+  }
+
+  const dir = env["RANDOM_PLAYLIST_DIR"];
+  if (!dir) {
+    throw new ConfigError("RANDOM_PLAYLIST is enabled but RANDOM_PLAYLIST_DIR is not set");
+  }
+
+  return { dir };
 }
