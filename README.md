@@ -10,24 +10,25 @@ Each playlist is configured independently via environment variables: a name, a S
 
 - Multiple playlists, each with its own destination root directory.
 - Incremental sync: only missing tracks are downloaded on every cycle.
+- Full playlist pagination: playlists of any size are fetched completely, not just the first 100 tracks.
+- Optional random public playlist discovery: pulls in a different public Spotify playlist each cycle.
+- Optional local storage quota (`MAX_SIZE`): stops starting new downloads once configured directories reach the limit.
 - Filesystem is the only source of truth for what has already been downloaded — no database.
 - Original Spotify track and artist names are preserved in file names (only filesystem-illegal characters are sanitized).
 - ID3 tags (title, artist, track number, year, cover art) are written from Spotify metadata, not from the download source.
 - Bounded global download concurrency.
 - One failing playlist never stops the others from syncing.
 - Clean shutdown on `SIGTERM`/`SIGINT`: no new downloads start, in-flight ones are allowed to finish.
-- **No Spotify account, developer app, or subscription of any kind is required.** Playlist and track metadata is read from Spotify's public embed pages (`open.spotify.com/embed/...`), the same data Spotify serves to render an embedded playlist widget on any website, with no authentication.
+- **No Spotify account, developer app, or subscription of any kind is required.** Playlist, search and track metadata is read through the same anonymous, unauthenticated access token that Spotify's own public embed player (`open.spotify.com/embed/...`) uses in every visitor's browser — obtained from `open.spotify.com/get_access_token`, never a registered developer app or user login.
 
 ## Requirements
 
 - Only **public** playlists are supported, since there is no user login involved.
 - Docker and Docker Compose for running the service.
 
-## Known limitation: 100 tracks per playlist
+## How metadata is fetched
 
-Spotify's public embed page returns at most 100 tracks per playlist; there is no documented way to page past that without emulating a full logged-in web player session. If a configured playlist has 100 or more tracks, the service logs a warning and only the first 100 are considered for syncing. This is a hard constraint of not requiring any account or subscription, not a bug — see `EMBED_TRACK_LIST_CAP` in `src/playlist/spotifyClient.ts`.
-
-This project relies on an undocumented, unofficial Spotify page structure. Spotify could change it at any time without notice, which would break metadata fetching until the scraper is updated.
+This project relies on an undocumented, unofficial Spotify mechanism: the anonymous access token issued to visitors of the public embed player. That token is used against the standard `api.spotify.com/v1` endpoints — with normal `limit`/`offset` pagination — to read full playlist contents (any size) and to search for public playlists. Spotify could change or restrict this at any time without notice, which would break metadata fetching until the client is updated.
 
 ## Configuration
 
@@ -40,11 +41,19 @@ SYNC_INTERVAL=86400
 DOWNLOAD_CONCURRENCY=2
 TEMP_DIR=/tmp/playlist2mp3
 LOG_LEVEL=info
+MAX_SIZE=
+
+RANDOM_PLAYLIST=false
+RANDOM_PLAYLIST_DIR=/music
 
 PLAYLIST_1_NAME=Rock
 PLAYLIST_1_URL=https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M
 PLAYLIST_1_DIR=/music
 ```
+
+- `MAX_SIZE` caps the combined size of all configured playlist directories (including the random one, if enabled). Accepts a plain byte count or a number with a `K`, `M`, `G` or `T` suffix, e.g. `500M` or `1G`. Leave it empty, unset, or `0` for unlimited storage (the default). The check runs once at the start of every sync cycle, before any track is fetched or downloaded; if the limit is already reached, that cycle's downloads are skipped and a clear error is logged, but the service keeps running and retries on the next cycle.
+- `RANDOM_PLAYLIST` (`true`/`false`, default `false`) picks a different public Spotify playlist at random at the start of every sync cycle and syncs it alongside the playlists configured with `PLAYLIST_N_*`, using the same incremental, no-duplicate-download logic. Requires `RANDOM_PLAYLIST_DIR`. If no random playlist can be found in a given cycle, a warning is logged and the rest of the cycle proceeds normally.
+- `RANDOM_PLAYLIST_DIR` is the root directory the randomly picked playlist is written under (same convention as `PLAYLIST_N_DIR`: a subfolder named after the picked playlist is created inside it). Required only when `RANDOM_PLAYLIST=true`.
 
 `MUSIC_HOST_DIR` is the real path on your machine that Docker Compose mounts into the container at the fixed path `/music` (see `docker-compose.yml`). Every `PLAYLIST_N_DIR` should point at `/music` — that's the container-side path, not `MUSIC_HOST_DIR` itself.
 

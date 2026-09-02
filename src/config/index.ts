@@ -1,6 +1,6 @@
 import type { AppConfig } from "../types/index.js";
-import { parsePositiveInt } from "./env.js";
-import { parsePlaylistConfigs } from "./playlists.js";
+import { parsePositiveInt, parseByteSize } from "./env.js";
+import { parsePlaylistConfigs, parseRandomPlaylistConfig } from "./playlists.js";
 
 export { ConfigError } from "./playlists.js";
 
@@ -12,12 +12,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     "DOWNLOAD_CONCURRENCY",
   );
   const tempDir = env["TEMP_DIR"] ?? "/tmp/playlist2mp3";
+  const maxSizeBytes = parseByteSize(env["MAX_SIZE"], "MAX_SIZE");
   const playlists = parsePlaylistConfigs(env);
+  const randomPlaylist = parseRandomPlaylistConfig(env);
 
   return {
     syncIntervalSec,
     downloadConcurrency,
     tempDir,
+    maxSizeBytes,
     playlists,
+    randomPlaylist,
   };
 }

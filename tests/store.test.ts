@@ -8,6 +8,8 @@ import {
   computeTrackPaths,
   fileExists,
   commitFile,
+  getDirectorySizeBytes,
+  isStorageQuotaExceeded,
 } from "../src/filesystem/store.js";
 import type { PlaylistConfig, SpotifyTrack } from "../src/types/index.js";
 
@@ -115,6 +117,61 @@ test("commitFile moves the temp file into place and reports it was written", asy
     assert.equal(committed, true);
     assert.equal(await fileExists(finalPath), true);
     assert.equal(await fileExists(tempPath), false);
+  });
+});
+
+test("getDirectorySizeBytes returns 0 for a directory that does not exist", async () => {
+  await withTempDir(async (root) => {
+    assert.equal(await getDirectorySizeBytes(join(root, "missing")), 0);
+  });
+});
+
+test("getDirectorySizeBytes sums file sizes recursively across subdirectories", async () => {
+  await withTempDir(async (root) => {
+    await writeFile(join(root, "a.mp3"), "12345");
+    const nested = join(root, "nested");
+    await ensurePlaylistDir({
+      id: "1",
+      name: "nested",
+      url: "https://open.spotify.com/playlist/abc",
+      spotifyPlaylistId: "abc",
+      rootDir: root,
+    });
+    await writeFile(join(nested, "b.mp3"), "1234567890");
+
+    assert.equal(await getDirectorySizeBytes(root), 15);
+  });
+});
+
+test("isStorageQuotaExceeded is always false when maxSizeBytes is 0", async () => {
+  await withTempDir(async (root) => {
+    const config: PlaylistConfig = {
+      id: "1",
+      name: "Rock",
+      url: "https://open.spotify.com/playlist/abc",
+      spotifyPlaylistId: "abc",
+      rootDir: root,
+    };
+    await ensurePlaylistDir(config);
+    await writeFile(join(root, "Rock", "big.mp3"), "x".repeat(1_000));
+    assert.equal(await isStorageQuotaExceeded(0, [config]), false);
+  });
+});
+
+test("isStorageQuotaExceeded returns true once combined playlist directories reach the limit", async () => {
+  await withTempDir(async (root) => {
+    const config: PlaylistConfig = {
+      id: "1",
+      name: "Rock",
+      url: "https://open.spotify.com/playlist/abc",
+      spotifyPlaylistId: "abc",
+      rootDir: root,
+    };
+    await ensurePlaylistDir(config);
+    await writeFile(join(root, "Rock", "song.mp3"), "x".repeat(1_000));
+
+    assert.equal(await isStorageQuotaExceeded(2_000, [config]), false);
+    assert.equal(await isStorageQuotaExceeded(500, [config]), true);
   });
 });
 

@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { loadConfig, ConfigError } from "./config/index.js";
 import { rootLogger } from "./utils/logger.js";
 import { abortableSleep } from "./utils/concurrency.js";
+import { formatBytes } from "./utils/size.js";
 import { runSyncCycle } from "./sync/syncCycle.js";
 
 async function main(): Promise<void> {
@@ -20,7 +21,9 @@ async function main(): Promise<void> {
   await mkdir(config.tempDir, { recursive: true });
 
   rootLogger.info(
-    `Starting Playlist2MP3: ${config.playlists.length} playlist(s), sync interval ${config.syncIntervalSec}s, concurrency ${config.downloadConcurrency}`,
+    `Starting Playlist2MP3: ${config.playlists.length} playlist(s), sync interval ${config.syncIntervalSec}s, concurrency ${config.downloadConcurrency}` +
+      (config.maxSizeBytes > 0 ? `, storage quota ${formatBytes(config.maxSizeBytes)}` : "") +
+      (config.randomPlaylist ? `, random playlist enabled -> ${config.randomPlaylist.dir}` : ""),
   );
   for (const playlist of config.playlists) {
     rootLogger.info(`Configured playlist: ${playlist.name} -> ${playlist.rootDir}`);
