@@ -468,16 +468,17 @@ test("a configured random playlist is fetched and synced alongside the regular o
         });
 
         assert.equal(summary.playlistsProcessed, 2);
-        const random = summary.playlistSummaries.find(
-          (p) => p.playlistName === "Discover Weekly Clone",
+        const random = summary.playlistSummaries.find((p) =>
+          p.playlistName.startsWith("Discover Weekly Clone"),
         );
         assert.equal(random?.downloaded, 1);
         assert.equal(random?.error, undefined);
 
-        const files = await readdir(join(randomRoot, "Discover Weekly Clone"));
+        const files = await readdir(
+          join(randomRoot, "Discover Weekly Clone (random12)"),
+        );
         assert.equal(files.length, 1);
       });
     });
   });
 });
-
