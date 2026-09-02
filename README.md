@@ -85,7 +85,8 @@ From now on, it keeps running quietly in the background and checks your playlist
 
 ## Good to know
 
-- Full playlist pagination is supported, so playlists larger than 100 tracks are fetched completely.
+- Playlist metadata comes from Spotify's public embed pages (no login needed), which only expose the first 100 tracks. Playlists larger than that are truncated to their first 100 tracks; the logs warn when this happens.
+- `RANDOM_PLAYLIST` requires searching across all of Spotify's public playlists, which the embed pages can't do. It logs a warning each cycle and is skipped until this project adds an alternative discovery source.
 - Spotify sometimes removes a track after it's been added to a playlist. The service notices and skips those automatically, and says so in its logs.
 - This relies on how Spotify's public playlist pages happen to be built today. If Spotify changes that, it could stop working until this project is updated to match.
 
@@ -107,8 +108,8 @@ Features:
 
 - Multiple playlists at once, each in its own folder.
 - Only downloads what's missing — safe to stop and restart anytime.
-- Full playlist pagination with no 100-track cap.
-- Optional random public playlist sync each cycle.
+- Playlist metadata via Spotify's public embed pages, capped at each playlist's first 100 tracks.
+- Optional random public playlist sync each cycle (currently unavailable; see "Good to know" above).
 - Optional storage quota checks before downloads.
 - Keeps original track/artist names (only filesystem-illegal characters get replaced).
 - Tags every MP3 (title, artist, track number, year, cover art) from Spotify's own metadata.

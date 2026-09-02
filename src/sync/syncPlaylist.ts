@@ -1,9 +1,9 @@
-import type { PlaylistConfig, PlaylistSummary } from "../types/index.js";
+import type { PlaylistConfig, PlaylistSummary, SpotifyTrack } from "../types/index.js";
 import type { Logger } from "../utils/logger.js";
 import { runWithSemaphore, type Semaphore } from "../utils/concurrency.js";
 import { ensurePlaylistDir, computeTrackPaths, fileExists } from "../filesystem/store.js";
 import { runTrackPipeline, defaultPipelineOps, type PipelineOps } from "../downloader/pipeline.js";
-import type { PlaylistTrackSource } from "../playlist/spotifyClient.js";
+import { EMBED_TRACK_LIST_CAP, type PlaylistTrackSource } from "../playlist/spotifyClient.js";
 
 export interface SyncPlaylistDeps {
   readonly spotifyClient: PlaylistTrackSource;
@@ -11,6 +11,27 @@ export interface SyncPlaylistDeps {
   readonly tempDir: string;
   readonly logger: Logger;
   readonly pipelineOps?: PipelineOps;
+}
+
+async function enrichTrack(
+  track: SpotifyTrack,
+  spotifyClient: PlaylistTrackSource,
+  logger: Logger,
+  signal?: AbortSignal,
+): Promise<SpotifyTrack> {
+  if (!spotifyClient.getTrackDetails) {
+    return track;
+  }
+  try {
+    return await spotifyClient.getTrackDetails(track, signal);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    logger.warn(
+      `Could not fetch extra metadata for "${track.title}" (id=${track.id}): ${reason}. ` +
+        "Continuing with basic metadata only.",
+    );
+    return track;
+  }
 }
 
 export async function syncPlaylist(
@@ -34,6 +55,12 @@ export async function syncPlaylist(
           ? ` (${unavailableCount} more listed in the playlist are unavailable — local-only or removed from Spotify's catalog — and were skipped)`
           : ""),
     );
+    if (tracks.length >= EMBED_TRACK_LIST_CAP) {
+      logger.warn(
+        `This playlist has ${tracks.length} tracks, which may hit the ${EMBED_TRACK_LIST_CAP}-track limit of the ` +
+          "no-login metadata source used by this service. Tracks beyond that point may not be visible or synced.",
+      );
+    }
 
     const trackPaths = computeTrackPaths(config, tracks);
     const existenceChecks = await Promise.all(
@@ -64,8 +91,9 @@ export async function syncPlaylist(
           failed += 1;
           return;
         }
+        const enrichedTrack = await enrichTrack(track, deps.spotifyClient, logger, signal);
         const outcome = await runTrackPipeline(
-          track,
+          enrichedTrack,
           finalPath,
           { tempDir: deps.tempDir, logger, signal },
           deps.pipelineOps ?? defaultPipelineOps,
