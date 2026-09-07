@@ -49,6 +49,7 @@ Keep this window open; you'll use it in Step 4.
 
 - `MAX_SIZE` caps the combined size of all configured playlist directories (including the random one, if enabled). Accepts a plain byte count or a number with a `K`, `M`, `G` or `T` suffix, e.g. `500M` or `1G`. Leave it empty, unset, or `0` for unlimited storage (the default). The check runs once at the start of every sync cycle, before any track is fetched or downloaded; if the limit is already reached, that cycle's downloads are skipped and a clear error is logged, but the service keeps running and retries on the next cycle.
 - `RANDOM_PLAYLIST` (`true`/`false`, default `false`) picks a different public Spotify playlist at random at the start of every sync cycle and syncs it alongside the playlists configured with `PLAYLIST_N_*`, using the same incremental, no-duplicate-download logic. Requires `RANDOM_PLAYLIST_DIR`. If no random playlist can be found in a given cycle, a warning is logged and the rest of the cycle proceeds normally.
+- `SPOTIFY_FULL_CATALOG` (`true`/`false`, default `true`) controls the metadata source. Left on, playlists are read page by page with no track limit. Set it to `false` to force the embed fallback, which stops at 100 tracks per playlist. `SPOTIFY_PAGE_DELAY_MS` (default `250`) is the pause between pages — raise it if Spotify starts throttling. `SPOTIFY_PARTNER_HASH` is an optional 64-character override for the query identifier; leave it empty and the service detects the current one by itself.
 - `RANDOM_PLAYLIST_DIR` is the root directory the randomly picked playlist is written under (same convention as `PLAYLIST_N_DIR`: a subfolder named after the picked playlist is created inside it). Required only when `RANDOM_PLAYLIST=true`.
 
 `MUSIC_HOST_DIR` is the real path on your machine that Docker Compose mounts into the container at the fixed path `/music` (see `docker-compose.yml`). Every `PLAYLIST_N_DIR` should point at `/music` — that's the container-side path, not `MUSIC_HOST_DIR` itself.
@@ -85,7 +86,7 @@ From now on, it keeps running quietly in the background and checks your playlist
 
 ## Good to know
 
-- Playlist metadata comes from Spotify's public embed pages (no login needed), which only expose the first 100 tracks. Playlists larger than that are truncated to their first 100 tracks; the logs warn when this happens.
+- Playlist metadata comes from Spotify's own public web endpoints (no login, no developer app), read page by page. Playlists of any size are synced in full. If that source is unreachable, the service falls back to Spotify's embed pages, which only expose the first 100 tracks; the logs warn whenever a playlist is truncated that way.
 - `RANDOM_PLAYLIST` requires searching across all of Spotify's public playlists, which the embed pages can't do. It logs a warning each cycle and is skipped until this project adds an alternative discovery source.
 - Spotify sometimes removes a track after it's been added to a playlist. The service notices and skips those automatically, and says so in its logs.
 - This relies on how Spotify's public playlist pages happen to be built today. If Spotify changes that, it could stop working until this project is updated to match.
@@ -108,13 +109,13 @@ Features:
 
 - Multiple playlists at once, each in its own folder.
 - Only downloads what's missing — safe to stop and restart anytime.
-- Playlist metadata via Spotify's public embed pages, capped at each playlist's first 100 tracks.
+- Playlist metadata via Spotify's public web endpoints, with no cap on playlist size.
 - Optional random public playlist sync each cycle (currently unavailable; see "Good to know" above).
 - Optional storage quota checks before downloads.
 - Keeps original track/artist names (only filesystem-illegal characters get replaced).
 - Tags every MP3 (title, artist, track number, year, cover art) from Spotify's own metadata.
 - One playlist failing never stops the others.
-- No Spotify account, developer app, or subscription: metadata comes from Spotify's public embed pages, the same data used to render an embedded playlist widget on any website.
+- No Spotify account, developer app, or subscription: metadata comes from the same public endpoints Spotify's own web player uses, reached with the anonymous token its embed pages already hand out.
 
 Local development:
 
@@ -123,7 +124,11 @@ npm install
 npm run typecheck
 npm test
 npm run dev   # requires yt-dlp and ffmpeg on PATH
+
+npm run check:spotify -- https://open.spotify.com/playlist/<id>
 ```
+
+`check:spotify` hits Spotify for real and reports which metadata source answered, how many tracks came back, and how much of the tagging metadata was filled in. Use it to confirm the full-catalog source still works.
 
 Tests run fully offline — no network calls, no real downloads.
 
@@ -131,7 +136,7 @@ Project layout:
 
 - `src/index.ts` — main process and lifecycle.
 - `src/config/` — environment parsing and validation.
-- `src/playlist/` — Spotify metadata client (public embed pages, no authentication).
+- `src/playlist/` — Spotify metadata client (anonymous token, paginated full-catalog source, embed fallback).
 - `src/sync/` — per-playlist and per-cycle synchronization orchestration.
 - `src/resolver/` — matches Spotify tracks to a downloadable source via `yt-dlp` search.
 - `src/downloader/` — download execution and the per-track pipeline state machine.

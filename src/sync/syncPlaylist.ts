@@ -19,6 +19,9 @@ async function enrichTrack(
   logger: Logger,
   signal?: AbortSignal,
 ): Promise<SpotifyTrack> {
+  if (track.releaseYear !== undefined && track.coverUrl !== undefined) {
+    return track;
+  }
   if (!spotifyClient.getTrackDetails) {
     return track;
   }
@@ -45,7 +48,7 @@ export async function syncPlaylist(
   try {
     await ensurePlaylistDir(config);
 
-    const { tracks, unavailableCount } = await deps.spotifyClient.getPlaylistTracks(
+    const { tracks, unavailableCount, source } = await deps.spotifyClient.getPlaylistTracks(
       config.spotifyPlaylistId,
       signal,
     );
@@ -55,10 +58,10 @@ export async function syncPlaylist(
           ? ` (${unavailableCount} more listed in the playlist are unavailable — local-only or removed from Spotify's catalog — and were skipped)`
           : ""),
     );
-    if (tracks.length >= EMBED_TRACK_LIST_CAP) {
+    if (source !== "partner" && tracks.length >= EMBED_TRACK_LIST_CAP) {
       logger.warn(
-        `This playlist has ${tracks.length} tracks, which may hit the ${EMBED_TRACK_LIST_CAP}-track limit of the ` +
-          "no-login metadata source used by this service. Tracks beyond that point may not be visible or synced.",
+        `This playlist hit the ${EMBED_TRACK_LIST_CAP}-track limit of the embed fallback source. ` +
+          "Tracks beyond that point were not visible and were not synced.",
       );
     }
 

@@ -10,6 +10,12 @@ export interface RandomPlaylistConfig {
   readonly dir: string;
 }
 
+export interface SpotifyConfig {
+  readonly fullCatalogEnabled: boolean;
+  readonly partnerQueryHash: string | undefined;
+  readonly pageDelayMs: number;
+}
+
 export interface AppConfig {
   readonly syncIntervalSec: number;
   readonly downloadConcurrency: number;
@@ -17,6 +23,7 @@ export interface AppConfig {
   readonly maxSizeBytes: number;
   readonly playlists: readonly PlaylistConfig[];
   readonly randomPlaylist: RandomPlaylistConfig | undefined;
+  readonly spotify: SpotifyConfig;
 }
 
 export interface SpotifyTrack {

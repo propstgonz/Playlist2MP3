@@ -18,6 +18,49 @@ export function parseByteSize(raw: string | undefined, varName: string): number 
   }
 }
 
+export function parseBoolean(raw: string | undefined, fallback: boolean, varName: string): boolean {
+  if (raw === undefined || raw.trim() === "") {
+    return fallback;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  throw new ConfigError(`${varName} must be true or false, got "${raw}"`);
+}
+
+export function parseNonNegativeInt(
+  raw: string | undefined,
+  fallback: number,
+  varName: string,
+): number {
+  if (raw === undefined || raw.trim() === "") {
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new ConfigError(`${varName} must be a non-negative integer, got "${raw}"`);
+  }
+  return value;
+}
+
+export function parsePartnerQueryHash(
+  raw: string | undefined,
+  varName: string,
+): string | undefined {
+  if (raw === undefined || raw.trim() === "") {
+    return undefined;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(normalized)) {
+    throw new ConfigError(`${varName} must be a 64-character hex hash, got "${raw}"`);
+  }
+  return normalized;
+}
+
 export function parsePositiveInt(
   raw: string | undefined,
   fallback: number,

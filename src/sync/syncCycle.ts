@@ -34,7 +34,14 @@ export async function runSyncCycle(
   overrides: SyncCycleOverrides = {},
 ): Promise<SyncSummary> {
   const startedAt = Date.now();
-  const spotifyClient = overrides.spotifyClient ?? new SpotifyClient();
+  const spotifyClient =
+    overrides.spotifyClient ??
+    new SpotifyClient({
+      logger: logger.child("spotify"),
+      partnerEnabled: config.spotify.fullCatalogEnabled,
+      partnerQueryHash: config.spotify.partnerQueryHash,
+      pageDelayMs: config.spotify.pageDelayMs,
+    });
   const downloadSemaphore = new Semaphore(config.downloadConcurrency);
 
   const playlists = [...config.playlists];

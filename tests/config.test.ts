@@ -91,3 +91,34 @@ test("surfaces the underlying playlist configuration error", () => {
 test("requires at least one playlist to be configured", () => {
   assert.throws(() => loadConfig({}), ConfigError);
 });
+
+test("defaults the Spotify full-catalog source to enabled", () => {
+  const config = loadConfig(baseEnv());
+  assert.equal(config.spotify.fullCatalogEnabled, true);
+  assert.equal(config.spotify.partnerQueryHash, undefined);
+  assert.equal(config.spotify.pageDelayMs, 250);
+});
+
+test("parses the Spotify full-catalog overrides", () => {
+  const hash = "b".repeat(64);
+  const config = loadConfig({
+    ...baseEnv(),
+    SPOTIFY_FULL_CATALOG: "false",
+    SPOTIFY_PARTNER_HASH: hash.toUpperCase(),
+    SPOTIFY_PAGE_DELAY_MS: "0",
+  });
+  assert.equal(config.spotify.fullCatalogEnabled, false);
+  assert.equal(config.spotify.partnerQueryHash, hash);
+  assert.equal(config.spotify.pageDelayMs, 0);
+});
+
+test("rejects an invalid SPOTIFY_PARTNER_HASH", () => {
+  assert.throws(
+    () => loadConfig({ ...baseEnv(), SPOTIFY_PARTNER_HASH: "not-a-hash" }),
+    ConfigError,
+  );
+});
+
+test("rejects an invalid SPOTIFY_FULL_CATALOG value", () => {
+  assert.throws(() => loadConfig({ ...baseEnv(), SPOTIFY_FULL_CATALOG: "maybe" }), ConfigError);
+});

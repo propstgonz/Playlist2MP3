@@ -10,7 +10,18 @@ import { Semaphore } from "../src/utils/concurrency.js";
 import { commitFile } from "../src/filesystem/store.js";
 import type { PipelineOps } from "../src/downloader/pipeline.js";
 import type { PlaylistTrackSource } from "../src/playlist/spotifyClient.js";
-import type { AppConfig, PlaylistConfig, SpotifyTrack } from "../src/types/index.js";
+import type {
+  AppConfig,
+  PlaylistConfig,
+  SpotifyConfig,
+  SpotifyTrack,
+} from "../src/types/index.js";
+
+const TEST_SPOTIFY_CONFIG: SpotifyConfig = {
+  fullCatalogEnabled: false,
+  partnerQueryHash: undefined,
+  pageDelayMs: 0,
+};
 
 function makeTrack(id: string, title: string): SpotifyTrack {
   return {
@@ -207,6 +218,7 @@ test("a failing playlist does not prevent other playlists from completing", asyn
         tempDir,
         maxSizeBytes: 0,
         randomPlaylist: undefined,
+        spotify: TEST_SPOTIFY_CONFIG,
         playlists: [
           {
             id: "1",
@@ -340,6 +352,7 @@ test("a slow playlist does not block a faster playlist from completing", async (
         tempDir,
         maxSizeBytes: 0,
         randomPlaylist: undefined,
+        spotify: TEST_SPOTIFY_CONFIG,
         playlists: [slowConfig, fastConfig],
       };
 
@@ -398,6 +411,7 @@ test("a storage quota already at or above MAX_SIZE skips downloads for the cycle
         tempDir,
         maxSizeBytes: 1,
         randomPlaylist: undefined,
+        spotify: TEST_SPOTIFY_CONFIG,
         playlists: [
           {
             id: "1",
@@ -437,6 +451,7 @@ test("a configured random playlist is fetched and synced alongside the regular o
           tempDir,
           maxSizeBytes: 0,
           randomPlaylist: { dir: randomRoot },
+          spotify: TEST_SPOTIFY_CONFIG,
           playlists: [
             {
               id: "1",
@@ -479,6 +494,50 @@ test("a configured random playlist is fetched and synced alongside the regular o
         );
         assert.equal(files.length, 1);
       });
+    });
+  });
+});
+
+test("syncs a playlist larger than the embed cap and stays idempotent", async () => {
+  await withTempDir(async (musicRoot) => {
+    await withTempDir(async (tempDir) => {
+      const config: PlaylistConfig = {
+        id: "1",
+        name: "Big",
+        url: "https://open.spotify.com/playlist/big",
+        spotifyPlaylistId: "big",
+        rootDir: musicRoot,
+      };
+      const tracks = Array.from({ length: 250 }, (_, i) =>
+        makeTrack(`t${i}`, `Song ${i}`),
+      );
+      const client: PlaylistTrackSource = {
+        getPlaylistTracks: async () => ({
+          tracks,
+          unavailableCount: 0,
+          source: "partner" as const,
+        }),
+      };
+      const deps = {
+        spotifyClient: client,
+        downloadSemaphore: new Semaphore(4),
+        tempDir,
+        logger: rootLogger,
+        pipelineOps: fakePipelineOps(),
+      };
+
+      const first = await syncPlaylist(config, deps);
+      assert.equal(first.tracksFound, 250);
+      assert.equal(first.downloaded, 250);
+      assert.equal(first.failed, 0);
+
+      const second = await syncPlaylist(config, deps);
+      assert.equal(second.tracksNew, 0);
+      assert.equal(second.downloaded, 0);
+      assert.equal(second.skipped, 250);
+
+      const files = await readdir(join(musicRoot, "Big"));
+      assert.equal(files.length, 250);
     });
   });
 });
