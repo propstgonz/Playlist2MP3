@@ -100,6 +100,11 @@ Everything above is controlled through `.env`; `docker-compose.yml` itself never
 | `MUSIC_HOST_DIR` | Real folder on your machine, mounted into the container. |
 | `SYNC_INTERVAL` | Seconds between sync cycles. |
 | `DOWNLOAD_CONCURRENCY` | Max tracks downloaded at once. |
+| `TEMP_DIR` | Working directory for temp files during conversion. |
+| `LOG_LEVEL` | `debug`, `info`, `warn` or `error`. |
+| `SPOTIFY_FULL_CATALOG` | `true` (default) reads playlists page by page with no track limit; `false` forces the 100-track embed fallback. |
+| `SPOTIFY_PAGE_DELAY_MS` | Pause between pages of 100 tracks (default `250`). |
+| `SPOTIFY_PARTNER_HASH` | Optional 64-char query hash override; empty means auto-detect. |
 | `MAX_SIZE` | Optional quota for total bytes in configured playlist directories. |
 | `RANDOM_PLAYLIST` | Enable syncing one random public playlist per cycle. |
 | `RANDOM_PLAYLIST_DIR` | Root dir used when `RANDOM_PLAYLIST=true`. |
