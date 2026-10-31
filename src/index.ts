@@ -49,10 +49,11 @@ async function main(): Promise<void> {
       const summary = await runSyncCycle(config, rootLogger, controller.signal);
       const totalDownloaded = summary.playlistSummaries.reduce((sum, p) => sum + p.downloaded, 0);
       const totalSkipped = summary.playlistSummaries.reduce((sum, p) => sum + p.skipped, 0);
+      const totalRemoved = summary.playlistSummaries.reduce((sum, p) => sum + p.removed, 0);
       const totalFailed = summary.playlistSummaries.reduce((sum, p) => sum + p.failed, 0);
       const totalErrors = summary.playlistSummaries.filter((p) => p.error !== undefined).length;
       rootLogger.info(
-        `Cycle completed: ${summary.playlistsProcessed} playlists processed, ${totalDownloaded} downloaded, ${totalSkipped} skipped, ${totalFailed} failed, ${totalErrors} playlist errors, duration ${summary.durationMs}ms`,
+        `Cycle completed: ${summary.playlistsProcessed} playlists processed, ${totalDownloaded} downloaded, ${totalSkipped} skipped, ${totalRemoved} removed, ${totalFailed} failed, ${totalErrors} playlist errors, duration ${summary.durationMs}ms`,
       );
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);

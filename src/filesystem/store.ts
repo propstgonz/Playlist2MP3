@@ -1,5 +1,5 @@
 import { mkdir, rename, copyFile, unlink, stat, readdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { PlaylistConfig, SpotifyTrack } from "../types/index.js";
 import {
   buildFileName,
@@ -8,6 +8,20 @@ import {
   resolveTrackPath,
   resolveTrackPathWithSuffix,
 } from "./paths.js";
+
+export function computeKeepPaths(
+  config: PlaylistConfig,
+  trackPaths: ReadonlyMap<string, string>,
+  unavailableTracks: readonly SpotifyTrack[],
+): string[] {
+  return [
+    ...trackPaths.values(),
+    ...unavailableTracks.flatMap((track) => [
+      resolveTrackPath(config, track),
+      resolveTrackPathWithSuffix(config, track),
+    ]),
+  ];
+}
 
 export async function ensurePlaylistDir(config: PlaylistConfig): Promise<string> {
   const dir = resolvePlaylistDir(config);
@@ -80,6 +94,27 @@ export async function commitFile(tempPath: string, finalPath: string): Promise<b
     }
   }
   return true;
+}
+
+export async function removeUnlistedTracks(
+  playlistDir: string,
+  keepPaths: Iterable<string>,
+): Promise<string[]> {
+  const keep = new Set([...keepPaths].map((path) => resolve(path).toLowerCase()));
+  const entries = await readdir(playlistDir, { withFileTypes: true });
+  const removed: string[] = [];
+  for (const entry of entries) {
+    const entryPath = resolve(playlistDir, entry.name);
+    if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".mp3")) {
+      continue;
+    }
+    if (keep.has(entryPath.toLowerCase())) {
+      continue;
+    }
+    await removeIfExists(entryPath);
+    removed.push(entry.name);
+  }
+  return removed;
 }
 
 export async function getDirectorySizeBytes(dir: string): Promise<number> {

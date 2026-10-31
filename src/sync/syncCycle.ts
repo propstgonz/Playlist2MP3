@@ -22,6 +22,7 @@ function quotaSkippedSummary(playlistId: string, playlistName: string): Playlist
     tracksNew: 0,
     downloaded: 0,
     skipped: 0,
+    removed: 0,
     failed: 0,
     error: "Skipped: local storage quota (MAX_SIZE) reached",
   };

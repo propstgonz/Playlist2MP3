@@ -66,6 +66,7 @@ export interface PlaylistSummary {
   readonly tracksNew: number;
   readonly downloaded: number;
   readonly skipped: number;
+  readonly removed: number;
   readonly failed: number;
   readonly error: string | undefined;
 }

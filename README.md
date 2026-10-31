@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/propstgonz/Playlist2MP3/actions/workflows/ci.yml/badge.svg)](https://github.com/propstgonz/Playlist2MP3/actions/workflows/ci.yml)
 
-A small background program that keeps a folder on your computer full of MP3s from a Spotify playlist. You give it a playlist link and a folder, and it takes care of everything else: it checks the playlist regularly, downloads whatever songs are missing, and never touches what's already there. You don't need a Spotify account, a paid subscription, or any technical knowledge to use it — just follow the steps below.
+A small background program that keeps a folder on your computer full of MP3s from a Spotify playlist. You give it a playlist link and a folder, and it takes care of everything else: it checks the playlist regularly, downloads whatever songs are missing, and deletes the MP3s of songs you removed from the playlist, so the folder is always an exact copy. Songs that are still in the playlist but no longer playable on Spotify are kept. You don't need a Spotify account, a paid subscription, or any technical knowledge to use it — just follow the steps below.
 
 ## What you need first
 
@@ -48,7 +48,7 @@ Keep this window open; you'll use it in Step 4.
 6. Save the file and close Notepad.
 
 - `MAX_SIZE` caps the combined size of all configured playlist directories (including the random one, if enabled). Accepts a plain byte count or a number with a `K`, `M`, `G` or `T` suffix, e.g. `500M` or `1G`. Leave it empty, unset, or `0` for unlimited storage (the default). The check runs once at the start of every sync cycle, before any track is fetched or downloaded; if the limit is already reached, that cycle's downloads are skipped and a clear error is logged, but the service keeps running and retries on the next cycle.
-- `RANDOM_PLAYLIST` (`true`/`false`, default `false`) picks a different public Spotify playlist at random at the start of every sync cycle and syncs it alongside the playlists configured with `PLAYLIST_N_*`, using the same incremental, no-duplicate-download logic. Requires `RANDOM_PLAYLIST_DIR`. If no random playlist can be found in a given cycle, a warning is logged and the rest of the cycle proceeds normally.
+- `RANDOM_PLAYLIST` (`true`/`false`, default `false`) picks a different public Spotify playlist at random at the start of every sync cycle and syncs it alongside the playlists configured with `PLAYLIST_N_*`, using the same mirror logic. Requires `RANDOM_PLAYLIST_DIR`. If no random playlist can be found in a given cycle, a warning is logged and the rest of the cycle proceeds normally.
 - `SPOTIFY_FULL_CATALOG` (`true`/`false`, default `true`) controls the metadata source. Left on, playlists are read page by page with no track limit. Set it to `false` to force the embed fallback, which stops at 100 tracks per playlist. `SPOTIFY_PAGE_DELAY_MS` (default `250`) is the pause between pages — raise it if Spotify starts throttling. `SPOTIFY_PARTNER_HASH` is an optional 64-character override for the query identifier; leave it empty and the service detects the current one by itself.
 - `RANDOM_PLAYLIST_DIR` is the root directory the randomly picked playlist is written under (same convention as `PLAYLIST_N_DIR`: a subfolder named after the picked playlist is created inside it). Required only when `RANDOM_PLAYLIST=true`.
 
@@ -86,7 +86,7 @@ From now on, it keeps running quietly in the background and checks your playlist
 
 ## Good to know
 
-- Playlist metadata comes from Spotify's own public web endpoints (no login, no developer app), read page by page. Playlists of any size are synced in full. If that source is unreachable, the service falls back to Spotify's embed pages, which only expose the first 100 tracks; the logs warn whenever a playlist is truncated that way.
+- Playlist metadata comes from Spotify's own public web endpoints (no login, no developer app), read page by page. Playlists of any size are synced in full. If that source is unreachable, the service falls back to Spotify's embed pages, which only expose the first 100 tracks; the logs warn whenever a playlist is truncated that way, and no files are deleted while the list may be incomplete.
 - `RANDOM_PLAYLIST` requires searching across all of Spotify's public playlists, which the embed pages can't do. It logs a warning each cycle and is skipped until this project adds an alternative discovery source.
 - Spotify sometimes removes a track after it's been added to a playlist. The service notices and skips those automatically, and says so in its logs.
 - This relies on how Spotify's public playlist pages happen to be built today. If Spotify changes that, it could stop working until this project is updated to match.

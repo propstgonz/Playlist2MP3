@@ -541,3 +541,75 @@ test("syncs a playlist larger than the embed cap and stays idempotent", async ()
     });
   });
 });
+
+test("tracks no longer in the playlist are removed, unavailable and non-mp3 files are kept", async () => {
+  await withTempDir(async (musicRoot) => {
+    await withTempDir(async (tempDir) => {
+      const config: PlaylistConfig = {
+        id: "1",
+        name: "Rock",
+        url: "https://open.spotify.com/playlist/abc",
+        spotifyPlaylistId: "abc",
+        rootDir: musicRoot,
+      };
+      const playlistDir = join(musicRoot, "Rock");
+      await mkdir(playlistDir, { recursive: true });
+      await writeFile(join(playlistDir, "Artist - Song One.mp3"), "mp3-audio");
+      await writeFile(join(playlistDir, "Artist - Gone.mp3"), "mp3-audio");
+      await writeFile(join(playlistDir, "Artist - Blocked.mp3"), "mp3-audio");
+      await writeFile(join(playlistDir, "cover.jpg"), "image");
+      const client: PlaylistTrackSource = {
+        getPlaylistTracks: async () => ({
+          tracks: [makeTrack("t1", "Song One")],
+          unavailableCount: 1,
+          unavailableTracks: [makeTrack("t3", "Blocked")],
+          source: "partner",
+        }),
+      };
+
+      const summary = await syncPlaylist(config, {
+        spotifyClient: client,
+        downloadSemaphore: new Semaphore(2),
+        tempDir,
+        logger: rootLogger,
+        pipelineOps: fakePipelineOps(),
+      });
+
+      assert.equal(summary.removed, 1);
+      const files = (await readdir(playlistDir)).sort();
+      assert.deepEqual(files, ["Artist - Blocked.mp3", "Artist - Song One.mp3", "cover.jpg"]);
+    });
+  });
+});
+
+test("a possibly truncated embed track list never removes local files", async () => {
+  await withTempDir(async (musicRoot) => {
+    await withTempDir(async (tempDir) => {
+      const config: PlaylistConfig = {
+        id: "1",
+        name: "Rock",
+        url: "https://open.spotify.com/playlist/abc",
+        spotifyPlaylistId: "abc",
+        rootDir: musicRoot,
+      };
+      const playlistDir = join(musicRoot, "Rock");
+      await mkdir(playlistDir, { recursive: true });
+      await writeFile(join(playlistDir, "Artist - Track 101.mp3"), "mp3-audio");
+      const tracks = Array.from({ length: 100 }, (_, i) => makeTrack(`t${i}`, `Track ${i}`));
+      const client: PlaylistTrackSource = {
+        getPlaylistTracks: async () => ({ tracks, unavailableCount: 0, source: "embed" }),
+      };
+
+      const summary = await syncPlaylist(config, {
+        spotifyClient: client,
+        downloadSemaphore: new Semaphore(4),
+        tempDir,
+        logger: rootLogger,
+        pipelineOps: fakePipelineOps(),
+      });
+
+      assert.equal(summary.removed, 0);
+      assert.equal((await readdir(playlistDir)).includes("Artist - Track 101.mp3"), true);
+    });
+  });
+});

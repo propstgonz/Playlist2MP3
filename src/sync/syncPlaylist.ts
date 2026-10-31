@@ -1,7 +1,13 @@
 import type { PlaylistConfig, PlaylistSummary, SpotifyTrack } from "../types/index.js";
 import type { Logger } from "../utils/logger.js";
 import { runWithSemaphore, type Semaphore } from "../utils/concurrency.js";
-import { ensurePlaylistDir, computeTrackPaths, fileExists } from "../filesystem/store.js";
+import {
+  ensurePlaylistDir,
+  computeTrackPaths,
+  computeKeepPaths,
+  fileExists,
+  removeUnlistedTracks,
+} from "../filesystem/store.js";
 import { runTrackPipeline, defaultPipelineOps, type PipelineOps } from "../downloader/pipeline.js";
 import { EMBED_TRACK_LIST_CAP, type PlaylistTrackSource } from "../playlist/spotifyClient.js";
 
@@ -46,9 +52,9 @@ export async function syncPlaylist(
   logger.info("Starting synchronization");
 
   try {
-    await ensurePlaylistDir(config);
+    const playlistDir = await ensurePlaylistDir(config);
 
-    const { tracks, unavailableCount, source } = await deps.spotifyClient.getPlaylistTracks(
+    const { tracks, unavailableCount, unavailableTracks, source } = await deps.spotifyClient.getPlaylistTracks(
       config.spotifyPlaylistId,
       signal,
     );
@@ -58,7 +64,8 @@ export async function syncPlaylist(
           ? ` (${unavailableCount} more listed in the playlist are unavailable — local-only or removed from Spotify's catalog — and were skipped)`
           : ""),
     );
-    if (source !== "partner" && tracks.length >= EMBED_TRACK_LIST_CAP) {
+    const listIsComplete = source === "partner" || tracks.length < EMBED_TRACK_LIST_CAP;
+    if (!listIsComplete) {
       logger.warn(
         `This playlist hit the ${EMBED_TRACK_LIST_CAP}-track limit of the embed fallback source. ` +
           "Tracks beyond that point were not visible and were not synced.",
@@ -114,8 +121,22 @@ export async function syncPlaylist(
 
     skipped += tracks.length - missingTracks.length;
 
+    let removed = 0;
+    if (listIsComplete && tracks.length > 0 && !signal?.aborted) {
+      const removedFiles = await removeUnlistedTracks(
+        playlistDir,
+        computeKeepPaths(config, trackPaths, unavailableTracks ?? []),
+      );
+      for (const fileName of removedFiles) {
+        logger.info(`Removed "${fileName}" (no longer in the Spotify playlist)`);
+      }
+      removed = removedFiles.length;
+    } else {
+      logger.warn("Track list may be incomplete, skipping removal of local files");
+    }
+
     logger.info(
-      `Synchronization completed: ${downloaded} downloaded, ${skipped} skipped, ${failed} failed`,
+      `Synchronization completed: ${downloaded} downloaded, ${skipped} skipped, ${removed} removed, ${failed} failed`,
     );
 
     return {
@@ -126,6 +147,7 @@ export async function syncPlaylist(
       tracksNew: missingTracks.length,
       downloaded,
       skipped,
+      removed,
       failed,
       error: undefined,
     };
@@ -140,6 +162,7 @@ export async function syncPlaylist(
       tracksNew: 0,
       downloaded: 0,
       skipped: 0,
+      removed: 0,
       failed: 0,
       error: reason,
     };
