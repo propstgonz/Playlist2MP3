@@ -1,89 +1,85 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import {
-  sanitizeSegment,
-  buildFileName,
-  resolvePlaylistDir,
-  resolveTrackPath,
-} from "../src/filesystem/paths.js";
-import type { PlaylistConfig, SpotifyTrack } from "../src/types/index.js";
+import { fileInDir, playlistDir, renderFileName, sanitizeSegment, withIdSuffix } from "../src/filesystem/paths.js";
+import { commitFile, fileExists, renameNoOverwrite, writeIfChanged } from "../src/filesystem/files.js";
+import { loadManifest, manifestPath, serializeManifest } from "../src/filesystem/manifest.js";
+import { makeTrack, withTempDir } from "./helpers.js";
 
-function makeTrack(overrides: Partial<SpotifyTrack> = {}): SpotifyTrack {
-  return {
-    id: "track-id-123",
-    title: "Café del Mar",
-    artists: ["Énergie"],
-    durationMs: 200_000,
-    trackNumber: 1,
-    releaseYear: 2020,
-    coverUrl: undefined,
-    ...overrides,
-  };
-}
-
-function makeConfig(overrides: Partial<PlaylistConfig> = {}): PlaylistConfig {
-  return {
-    id: "1",
-    name: "Rock",
-    url: "https://open.spotify.com/playlist/abc",
-    spotifyPlaylistId: "abc",
-    rootDir: join(tmpdir(), "playlist2mp3-paths-test"),
-    ...overrides,
-  };
-}
-
-test("preserves accents, casing and spaces in sanitized segments", () => {
-  assert.equal(sanitizeSegment("Énergie Rock Café"), "Énergie Rock Café");
+test("keeps accents, casing and spaces", () => {
+  assert.equal(sanitizeSegment("Café del Mar"), "Café del Mar");
 });
 
-test("rejects path traversal via ../", () => {
+test("neutralises path traversal, separators, control characters and reserved names", () => {
   assert.equal(sanitizeSegment("../../etc/passwd").includes(".."), false);
-  assert.equal(sanitizeSegment("../../etc/passwd").includes("/"), false);
+  assert.equal(sanitizeSegment("a/b\\c").includes("/"), false);
+  assert.equal(sanitizeSegment("a\u0001b"), "a_b");
+  assert.equal(sanitizeSegment("CON"), "_CON");
+  assert.equal(sanitizeSegment("   "), "untitled");
 });
 
-test("rejects alternate path separators", () => {
-  const sanitized = sanitizeSegment("a/b\\c");
-  assert.equal(sanitized.includes("/"), false);
-  assert.equal(sanitized.includes("\\"), false);
+test("playlist folders always stay inside the music directory", () => {
+  const root = join(tmpdir(), "music-root");
+  assert.equal(playlistDir(root, "../../outside").startsWith(resolve(root)), true);
+  assert.equal(fileInDir(playlistDir(root, "Rock"), "../escape.mp3").startsWith(resolve(root)), true);
 });
 
-test("rejects Windows reserved device names", () => {
-  assert.notEqual(sanitizeSegment("CON").toUpperCase(), "CON");
-  assert.notEqual(sanitizeSegment("con").toUpperCase(), "CON");
+test("renders file names from the template", () => {
+  const track = makeTrack("abcdefgh123", "One More Time", { artists: ["Daft Punk", "Romanthony"], album: "Discovery", releaseYear: 2001 });
+  assert.equal(renderFileName("{artists} - {title}", track), "Daft Punk, Romanthony - One More Time.mp3");
+  assert.equal(renderFileName("{artist} - {title} ({year})", track), "Daft Punk - One More Time (2001).mp3");
+  assert.equal(renderFileName("{artist} - {album} - {title}", { ...track, album: undefined }), "Daft Punk - One More Time.mp3");
+  assert.equal(renderFileName("{artists} - {title}", { ...track, title: "AC/DC: Live?" }), "Daft Punk, Romanthony - AC_DC_ Live_.mp3");
+  assert.equal(withIdSuffix("A - B.mp3", "abcdefgh123"), "A - B (abcdefgh).mp3");
 });
 
-test("strips control characters", () => {
-  const withControlChar = `bad${String.fromCharCode(0)}name`;
-  assert.equal(sanitizeSegment(withControlChar), "bad_name");
+test("commitFile never overwrites and renameNoOverwrite refuses existing targets", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(join(dir, "final.mp3"), "keep");
+    await writeFile(join(dir, "temp.mp3"), "new");
+    assert.equal(await commitFile(join(dir, "temp.mp3"), join(dir, "final.mp3")), false);
+    assert.equal(await readFile(join(dir, "final.mp3"), "utf8"), "keep");
+    assert.equal(await fileExists(join(dir, "temp.mp3")), false);
+
+    await writeFile(join(dir, "other.mp3"), "other");
+    assert.equal(await renameNoOverwrite(join(dir, "other.mp3"), join(dir, "final.mp3")), false);
+    assert.equal(await renameNoOverwrite(join(dir, "other.mp3"), join(dir, "Other.mp3")), true);
+    assert.deepEqual((await readdir(dir)).sort(), ["Other.mp3", "final.mp3"]);
+  });
 });
 
-test("builds deterministic file names preserving original artist/title spacing", () => {
-  const track = makeTrack({ artists: ["Daft Punk"], title: "One More Time" });
-  assert.equal(buildFileName(track), "Daft Punk - One More Time.mp3");
+test("writeIfChanged skips identical content", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "list.m3u");
+    assert.equal(await writeIfChanged(path, "a"), true);
+    assert.equal(await writeIfChanged(path, "a"), false);
+    assert.equal(await writeIfChanged(path, "b"), true);
+  });
 });
 
-test("buildFileName is deterministic for the same track", () => {
-  const track = makeTrack();
-  assert.equal(buildFileName(track), buildFileName(track));
+test("the folder index round-trips and a corrupt one is set aside", async () => {
+  await withTempDir(async (dir) => {
+    assert.equal((await loadManifest(dir, true)).status, "missing");
+    await writeFile(manifestPath(dir), serializeManifest(new Map([["t1", "A - B.mp3"], ["bad", "../x.mp3"]])));
+    const loaded = await loadManifest(dir, true);
+    assert.equal(loaded.status, "loaded");
+    assert.deepEqual([...loaded.tracks], [["t1", "A - B.mp3"]]);
+
+    await writeFile(manifestPath(dir), "{ broken");
+    assert.equal((await loadManifest(dir, false)).status, "corrupt");
+    assert.equal(await fileExists(manifestPath(dir)), true);
+    assert.equal((await loadManifest(dir, true)).status, "corrupt");
+    const files = await readdir(dir);
+    assert.equal(files.some((f) => f.startsWith(".playlist2mp3.corrupt-")), true);
+    assert.equal(files.includes(".playlist2mp3.json"), false);
+  });
 });
 
-test("resolvePlaylistDir stays contained within rootDir", () => {
-  const config = makeConfig({ name: "Rock" });
-  const dir = resolvePlaylistDir(config);
-  assert.equal(dir.startsWith(resolve(config.rootDir)), true);
-});
-
-test("resolveTrackPath rejects a playlist name that tries to escape rootDir", () => {
-  const config = makeConfig({ name: "../../outside" });
-  const path = resolveTrackPath(config, makeTrack());
-  assert.equal(path.startsWith(resolve(config.rootDir)), true);
-});
-
-test("two distinct playlist names never resolve to the same directory after sanitization collapse", () => {
-  const configA = makeConfig({ name: "Rock/../Electronic" });
-  const configB = makeConfig({ name: "Electronic" });
-  assert.notEqual(resolvePlaylistDir(configA), undefined);
-  assert.equal(resolvePlaylistDir(configB).endsWith("Electronic"), true);
+test("an empty directory has no index and no files", async () => {
+  await withTempDir(async (dir) => {
+    await mkdir(join(dir, "sub"));
+    assert.equal((await loadManifest(join(dir, "sub"), true)).tracks.size, 0);
+  });
 });

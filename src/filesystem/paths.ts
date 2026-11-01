@@ -1,5 +1,5 @@
 import { join, resolve, sep } from "node:path";
-import type { PlaylistConfig, SpotifyTrack } from "../types/index.js";
+import type { SpotifyTrack } from "../types/index.js";
 
 const ILLEGAL_CHARS = /[<>:"/\\|?*]/g;
 const CONTROL_CHARS = new RegExp(
@@ -12,26 +12,12 @@ const WINDOWS_RESERVED_NAMES = new Set([
   "PRN",
   "AUX",
   "NUL",
-  "COM1",
-  "COM2",
-  "COM3",
-  "COM4",
-  "COM5",
-  "COM6",
-  "COM7",
-  "COM8",
-  "COM9",
-  "LPT1",
-  "LPT2",
-  "LPT3",
-  "LPT4",
-  "LPT5",
-  "LPT6",
-  "LPT7",
-  "LPT8",
-  "LPT9",
+  ...Array.from({ length: 9 }, (_, i) => `COM${i + 1}`),
+  ...Array.from({ length: 9 }, (_, i) => `LPT${i + 1}`),
 ]);
 const MAX_SEGMENT_LENGTH = 200;
+
+export const FILE_NAME_PLACEHOLDERS: readonly string[] = ["artists", "artist", "title", "album", "year"];
 
 export class PathSecurityError extends Error {
   constructor(message: string) {
@@ -50,38 +36,39 @@ export function sanitizeSegment(raw: string): string {
   if (sanitized.length > MAX_SEGMENT_LENGTH) {
     sanitized = sanitized.slice(0, MAX_SEGMENT_LENGTH).trim();
   }
-
   if (sanitized === "" || sanitized === "." || sanitized === "..") {
     sanitized = "untitled";
   }
-
   if (WINDOWS_RESERVED_NAMES.has(sanitized.toUpperCase())) {
     sanitized = `_${sanitized}`;
   }
-
   return sanitized;
 }
 
-export function buildFileName(track: SpotifyTrack): string {
-  const artistPart = track.artists.join(", ");
-  const rawName = `${artistPart} - ${track.title}`;
-  return `${sanitizeSegment(rawName)}.mp3`;
+export function renderFileName(template: string, track: SpotifyTrack): string {
+  const values: Record<string, string> = {
+    artists: track.artists.join(", "),
+    artist: track.artists[0] ?? "",
+    title: track.title,
+    album: track.album ?? "",
+    year: track.releaseYear === undefined ? "" : String(track.releaseYear),
+  };
+  const rendered = template
+    .replace(/\{(\w+)\}/g, (_, key: string) => values[key] ?? "")
+    .replace(/\s*-\s*-\s*/g, " - ")
+    .replace(/^[\s-]+|[\s-]+$/g, "");
+  return `${sanitizeSegment(rendered)}.mp3`;
 }
 
-export function buildFileNameWithSuffix(track: SpotifyTrack): string {
-  const artistPart = track.artists.join(", ");
-  const shortId = track.id.slice(0, 8);
-  const rawName = `${artistPart} - ${track.title} (${shortId})`;
-  return `${sanitizeSegment(rawName)}.mp3`;
+export function withIdSuffix(fileName: string, trackId: string): string {
+  const base = fileName.replace(/\.mp3$/i, "");
+  return `${base} (${trackId.slice(0, 8)}).mp3`;
 }
 
-function assertContained(rootDir: string, candidate: string): string {
+export function assertContained(rootDir: string, candidate: string): string {
   const resolvedRoot = resolve(rootDir);
   const resolvedCandidate = resolve(candidate);
-  if (
-    resolvedCandidate !== resolvedRoot &&
-    !resolvedCandidate.startsWith(resolvedRoot + sep)
-  ) {
+  if (resolvedCandidate !== resolvedRoot && !resolvedCandidate.startsWith(resolvedRoot + sep)) {
     throw new PathSecurityError(
       `Resolved path "${resolvedCandidate}" escapes root directory "${resolvedRoot}"`,
     );
@@ -89,23 +76,10 @@ function assertContained(rootDir: string, candidate: string): string {
   return resolvedCandidate;
 }
 
-export function resolvePlaylistDir(config: PlaylistConfig): string {
-  const sanitizedName = sanitizeSegment(config.name);
-  const candidate = join(config.rootDir, sanitizedName);
-  return assertContained(config.rootDir, candidate);
+export function playlistDir(musicDir: string, playlistName: string): string {
+  return assertContained(musicDir, join(musicDir, sanitizeSegment(playlistName)));
 }
 
-export function resolveTrackPath(config: PlaylistConfig, track: SpotifyTrack): string {
-  const playlistDir = resolvePlaylistDir(config);
-  const candidate = join(playlistDir, buildFileName(track));
-  return assertContained(config.rootDir, candidate);
-}
-
-export function resolveTrackPathWithSuffix(
-  config: PlaylistConfig,
-  track: SpotifyTrack,
-): string {
-  const playlistDir = resolvePlaylistDir(config);
-  const candidate = join(playlistDir, buildFileNameWithSuffix(track));
-  return assertContained(config.rootDir, candidate);
+export function fileInDir(dir: string, fileName: string): string {
+  return assertContained(dir, join(dir, sanitizeSegment(fileName)));
 }

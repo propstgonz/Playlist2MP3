@@ -1,614 +1,221 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readdir, writeFile, mkdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { syncPlaylist } from "../src/sync/syncPlaylist.js";
-import { runSyncCycle } from "../src/sync/syncCycle.js";
-import { rootLogger } from "../src/utils/logger.js";
-import { Semaphore } from "../src/utils/concurrency.js";
-import { commitFile } from "../src/filesystem/store.js";
+import type { AppConfig, SpotifyTrack, SyncMode } from "../src/types/index.js";
 import type { PipelineOps } from "../src/downloader/pipeline.js";
-import type { PlaylistTrackSource } from "../src/playlist/spotifyClient.js";
-import type {
-  AppConfig,
-  PlaylistConfig,
-  SpotifyConfig,
-  SpotifyTrack,
-} from "../src/types/index.js";
+import type { PlaylistFetchResult, PlaylistSource } from "../src/playlist/spotify.js";
+import { commitFile } from "../src/filesystem/files.js";
+import { describeCycle, runCycle } from "../src/sync/cycle.js";
+import { rootLogger } from "../src/utils/logger.js";
+import { makeConfig, makeTrack, withTempDir } from "./helpers.js";
 
-const TEST_SPOTIFY_CONFIG: SpotifyConfig = {
-  fullCatalogEnabled: false,
-  partnerQueryHash: undefined,
-  pageDelayMs: 0,
-};
+interface FakeSource extends PlaylistSource {
+  readonly lists: Map<string, PlaylistFetchResult>;
+}
 
-function makeTrack(id: string, title: string): SpotifyTrack {
+function fakeSource(lists: Record<string, readonly SpotifyTrack[]>, failing: readonly string[] = []): FakeSource {
+  const map = new Map(
+    Object.entries(lists).map(([id, tracks]) => [id, { tracks, unavailable: 0, complete: true, source: "full" as const }]),
+  );
   return {
-    id,
-    title,
-    artists: ["Artist"],
-    durationMs: 200_000,
-    trackNumber: 1,
-    releaseYear: 2020,
-    coverUrl: undefined,
+    lists: map,
+    getPlaylist: async (id) => {
+      if (failing.includes(id)) {
+        throw new Error(`playlist ${id} is broken`);
+      }
+      const found = map.get(id);
+      if (!found) {
+        throw new Error(`unknown playlist ${id}`);
+      }
+      return found;
+    },
+    findRandomPlaylist: async () => ({ playlistId: "random", name: "Random Mix" }),
   };
 }
 
-function fakePipelineOps(): PipelineOps {
-  return {
-    resolveTrack: async () => ({ sourceUrl: "u", sourceTitle: "t", durationSec: 1 }),
-    downloadSource: async (_source, workDir, baseName) => {
-      const path = join(workDir, `${baseName}.raw`);
-      await writeFile(path, "raw-audio");
+interface FakeOps extends PipelineOps {
+  readonly resolved: string[];
+  maxActive: number;
+}
+
+function fakeOps(failIds: readonly string[] = []): FakeOps {
+  let active = 0;
+  const result: FakeOps = {
+    resolved: [],
+    maxActive: 0,
+    resolve: async (track) => {
+      result.resolved.push(track.id);
+      if (failIds.includes(track.id)) {
+        throw new Error("no faithful version found");
+      }
+      return {
+        candidate: { source: "ytmusic", url: `u-${track.id}`, title: track.title, track: track.title, artists: [...track.artists], channel: "", album: undefined, durationSec: 200 },
+        doubtful: false,
+      };
+    },
+    download: async (_source, tempDir, trackId) => {
+      active += 1;
+      result.maxActive = Math.max(result.maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      const path = join(tempDir, `${trackId}-${Math.random().toString(36).slice(2)}.mp3`);
+      await writeFile(path, `audio-${trackId}`);
       return path;
     },
-    convertToMp3: async (_input, output) => {
-      await writeFile(output, "mp3-audio");
-    },
-    tagMp3: async () => {},
-    commitFile,
+    tag: async () => undefined,
+    commit: commitFile,
   };
+  return result;
 }
 
-function fakeSpotifyClient(tracksByPlaylist: ReadonlyMap<string, readonly SpotifyTrack[]>): PlaylistTrackSource {
-  return {
-    getPlaylistTracks: async (playlistId) => ({
-      tracks: tracksByPlaylist.get(playlistId) ?? [],
-      unavailableCount: 0,
-    }),
-  };
+function playlists(...entries: [string, string, SyncMode?][]): AppConfig["playlists"] {
+  return entries.map(([name, playlistId, mode]) => ({ name, playlistId, url: `https://open.spotify.com/playlist/${playlistId}`, mode: mode ?? "mirror" }));
 }
 
-async function withTempDir(fn: (root: string) => Promise<void>): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "playlist2mp3-sync-"));
-  try {
-    await fn(root);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+async function cycle(config: AppConfig, source: PlaylistSource, ops: PipelineOps, root: string) {
+  const tempDir = join(root, "tmp");
+  await mkdir(tempDir, { recursive: true });
+  return runCycle(config, { source, ops, musicDir: join(root, "music"), tempDir, logger: rootLogger });
 }
 
-test("first sync downloads all tracks and creates the playlist directory", async () => {
-  await withTempDir(async (musicRoot) => {
-    await withTempDir(async (tempDir) => {
-      const config: PlaylistConfig = {
-        id: "1",
-        name: "Rock",
-        url: "https://open.spotify.com/playlist/abc",
-        spotifyPlaylistId: "abc",
-        rootDir: musicRoot,
-      };
-      const tracks = [makeTrack("t1", "Song One"), makeTrack("t2", "Song Two")];
-      const client = fakeSpotifyClient(new Map([["abc", tracks]]));
+async function files(root: string, playlist: string): Promise<string[]> {
+  return (await readdir(join(root, "music", playlist))).sort();
+}
 
-      const summary = await syncPlaylist(config, {
-        spotifyClient: client,
-        downloadSemaphore: new Semaphore(2),
-        tempDir,
-        logger: rootLogger,
-        pipelineOps: fakePipelineOps(),
-      });
+const a = makeTrack("a1", "Alpha", { position: 1 });
+const b = makeTrack("b2", "Beta", { position: 2 });
+const c = makeTrack("c3", "Gamma", { position: 3 });
 
-      assert.equal(summary.error, undefined);
-      assert.equal(summary.tracksFound, 2);
-      assert.equal(summary.tracksNew, 2);
-      assert.equal(summary.downloaded, 2);
-      assert.equal(summary.failed, 0);
-
-      const files = await readdir(join(musicRoot, "Rock"));
-      assert.equal(files.length, 2);
-    });
+test("first sync downloads everything and writes the folder index and the m3u", async () => {
+  await withTempDir(async (root) => {
+    const summary = await cycle(makeConfig({ playlists: playlists(["Rock", "p1"]) }), fakeSource({ p1: [a, b] }), fakeOps(), root);
+    assert.equal(summary.playlists[0]?.downloaded, 2);
+    assert.deepEqual(await files(root, "Rock"), [".playlist2mp3.json", "Artist - Alpha.mp3", "Artist - Beta.mp3", "Rock.m3u"]);
+    const m3u = await readFile(join(root, "music", "Rock", "Rock.m3u"), "utf8");
+    assert.equal(m3u.indexOf("Alpha") < m3u.indexOf("Beta"), true);
   });
 });
 
-test("second sync with no changes downloads nothing", async () => {
-  await withTempDir(async (musicRoot) => {
-    await withTempDir(async (tempDir) => {
-      const config: PlaylistConfig = {
-        id: "1",
-        name: "Rock",
-        url: "https://open.spotify.com/playlist/abc",
-        spotifyPlaylistId: "abc",
-        rootDir: musicRoot,
-      };
-      const tracks = [makeTrack("t1", "Song One")];
-      const client = fakeSpotifyClient(new Map([["abc", tracks]]));
-      const deps = {
-        spotifyClient: client,
-        downloadSemaphore: new Semaphore(2),
-        tempDir,
-        logger: rootLogger,
-        pipelineOps: fakePipelineOps(),
-      };
-
-      const first = await syncPlaylist(config, deps);
-      assert.equal(first.downloaded, 1);
-
-      const second = await syncPlaylist(config, deps);
-      assert.equal(second.downloaded, 0);
-      assert.equal(second.skipped, 1);
-      assert.equal(second.tracksNew, 0);
-    });
+test("an unchanged playlist causes zero work on the next cycle", async () => {
+  await withTempDir(async (root) => {
+    const config = makeConfig({ playlists: playlists(["Rock", "p1"]) });
+    const source = fakeSource({ p1: [a, b] });
+    await cycle(config, source, fakeOps(), root);
+    const ops = fakeOps();
+    const summary = await cycle(config, source, ops, root);
+    assert.deepEqual(ops.resolved, []);
+    assert.equal(summary.playlists[0]?.unchanged, 2);
+    assert.equal(summary.playlists[0]?.downloaded, 0);
   });
 });
 
-test("adding one new track only downloads that track", async () => {
-  await withTempDir(async (musicRoot) => {
-    await withTempDir(async (tempDir) => {
-      const config: PlaylistConfig = {
-        id: "1",
-        name: "Rock",
-        url: "https://open.spotify.com/playlist/abc",
-        spotifyPlaylistId: "abc",
-        rootDir: musicRoot,
-      };
-      const deps = (tracks: readonly SpotifyTrack[]) => ({
-        spotifyClient: fakeSpotifyClient(new Map([["abc", tracks]])),
-        downloadSemaphore: new Semaphore(2),
-        tempDir,
-        logger: rootLogger,
-        pipelineOps: fakePipelineOps(),
-      });
-
-      const first = await syncPlaylist(config, deps([makeTrack("t1", "Song One")]));
-      assert.equal(first.downloaded, 1);
-
-      const second = await syncPlaylist(
-        config,
-        deps([makeTrack("t1", "Song One"), makeTrack("t2", "Song Two")]),
-      );
-      assert.equal(second.downloaded, 1);
-      assert.equal(second.skipped, 1);
-      assert.equal(second.tracksNew, 1);
-    });
+test("mirror mode removes songs that left Spotify but never touches your own files", async () => {
+  await withTempDir(async (root) => {
+    const config = makeConfig({ playlists: playlists(["Rock", "p1"]) });
+    const source = fakeSource({ p1: [a, b] });
+    await cycle(config, source, fakeOps(), root);
+    await writeFile(join(root, "music", "Rock", "My own recording.mp3"), "mine");
+    await writeFile(join(root, "music", "Rock", "cover.jpg"), "img");
+    source.lists.set("p1", { tracks: [a], unavailable: 1, complete: true, source: "full" });
+    const summary = await cycle(config, source, fakeOps(), root);
+    assert.equal(summary.playlists[0]?.removed, 1);
+    assert.deepEqual(await files(root, "Rock"), [".playlist2mp3.json", "Artist - Alpha.mp3", "My own recording.mp3", "Rock.m3u", "cover.jpg"]);
   });
 });
 
-test("two playlists with identically named tracks stay isolated in their own directories", async () => {
-  await withTempDir(async (musicRoot) => {
-    await withTempDir(async (tempDir) => {
-      const configA: PlaylistConfig = {
-        id: "1",
-        name: "Rock",
-        url: "https://open.spotify.com/playlist/abc",
-        spotifyPlaylistId: "abc",
-        rootDir: musicRoot,
-      };
-      const configB: PlaylistConfig = {
-        id: "2",
-        name: "Electronic",
-        url: "https://open.spotify.com/playlist/def",
-        spotifyPlaylistId: "def",
-        rootDir: musicRoot,
-      };
-      const sameTrack = makeTrack("shared-title", "Same Song");
-      const clientA = fakeSpotifyClient(new Map([["abc", [sameTrack]]]));
-      const clientB = fakeSpotifyClient(new Map([["def", [sameTrack]]]));
-
-      await syncPlaylist(configA, {
-        spotifyClient: clientA,
-        downloadSemaphore: new Semaphore(2),
-        tempDir,
-        logger: rootLogger,
-        pipelineOps: fakePipelineOps(),
-      });
-      await syncPlaylist(configB, {
-        spotifyClient: clientB,
-        downloadSemaphore: new Semaphore(2),
-        tempDir,
-        logger: rootLogger,
-        pipelineOps: fakePipelineOps(),
-      });
-
-      const rockFiles = await readdir(join(musicRoot, "Rock"));
-      const electronicFiles = await readdir(join(musicRoot, "Electronic"));
-      assert.equal(rockFiles.length, 1);
-      assert.equal(electronicFiles.length, 1);
-    });
+test("incremental mode only adds", async () => {
+  await withTempDir(async (root) => {
+    const config = makeConfig({ playlists: playlists(["Rock", "p1", "incremental"]) });
+    const source = fakeSource({ p1: [a, b] });
+    await cycle(config, source, fakeOps(), root);
+    source.lists.set("p1", { tracks: [a, c], unavailable: 0, complete: true, source: "full" });
+    const summary = await cycle(config, source, fakeOps(), root);
+    assert.equal(summary.playlists[0]?.removed, 0);
+    assert.equal(summary.playlists[0]?.downloaded, 1);
+    assert.deepEqual(await files(root, "Rock"), [".playlist2mp3.json", "Artist - Alpha.mp3", "Artist - Beta.mp3", "Artist - Gamma.mp3", "Rock.m3u"]);
   });
 });
 
-test("a failing playlist does not prevent other playlists from completing", async () => {
-  await withTempDir(async (musicRoot) => {
-    await withTempDir(async (tempDir) => {
-      const config: AppConfig = {
-        syncIntervalSec: 3600,
-        downloadConcurrency: 2,
-        tempDir,
-        maxSizeBytes: 0,
-        randomPlaylist: undefined,
-        spotify: TEST_SPOTIFY_CONFIG,
-        playlists: [
-          {
-            id: "1",
-            name: "Broken",
-            url: "https://open.spotify.com/playlist/broken",
-            spotifyPlaylistId: "broken",
-            rootDir: musicRoot,
-          },
-          {
-            id: "2",
-            name: "Working",
-            url: "https://open.spotify.com/playlist/working",
-            spotifyPlaylistId: "working",
-            rootDir: musicRoot,
-          },
-        ],
-      };
-
-      const client: PlaylistTrackSource = {
-        getPlaylistTracks: async (playlistId) => {
-          if (playlistId === "broken") {
-            throw new Error("Spotify API unreachable");
-          }
-          return { tracks: [makeTrack("t1", "Song One")], unavailableCount: 0 };
-        },
-      };
-
-      const summary = await runSyncCycle(config, rootLogger, undefined, {
-        spotifyClient: client,
-        pipelineOps: fakePipelineOps(),
-      });
-
-      assert.equal(summary.playlistsProcessed, 2);
-      const broken = summary.playlistSummaries.find((p) => p.playlistName === "Broken");
-      const working = summary.playlistSummaries.find((p) => p.playlistName === "Working");
-      assert.notEqual(broken?.error, undefined);
-      assert.equal(working?.error, undefined);
-      assert.equal(working?.downloaded, 1);
-    });
+test("an incomplete track list never deletes anything", async () => {
+  await withTempDir(async (root) => {
+    const config = makeConfig({ playlists: playlists(["Rock", "p1"]) });
+    const source = fakeSource({ p1: [a, b] });
+    await cycle(config, source, fakeOps(), root);
+    source.lists.set("p1", { tracks: [a], unavailable: 0, complete: false, source: "embed" });
+    const summary = await cycle(config, source, fakeOps(), root);
+    assert.equal(summary.playlists[0]?.removed, 0);
+    assert.equal((await files(root, "Rock")).includes("Artist - Beta.mp3"), true);
   });
 });
 
-test("restarting after a completed sync does not redownload anything", async () => {
-  await withTempDir(async (musicRoot) => {
-    await withTempDir(async (tempDir) => {
-      const config: PlaylistConfig = {
-        id: "1",
-        name: "Rock",
-        url: "https://open.spotify.com/playlist/abc",
-        spotifyPlaylistId: "abc",
-        rootDir: musicRoot,
-      };
-      const tracks = [makeTrack("t1", "Song One"), makeTrack("t2", "Song Two")];
-
-      await syncPlaylist(config, {
-        spotifyClient: fakeSpotifyClient(new Map([["abc", tracks]])),
-        downloadSemaphore: new Semaphore(2),
-        tempDir,
-        logger: rootLogger,
-        pipelineOps: fakePipelineOps(),
-      });
-
-      const afterRestart = await syncPlaylist(config, {
-        spotifyClient: fakeSpotifyClient(new Map([["abc", tracks]])),
-        downloadSemaphore: new Semaphore(2),
-        tempDir,
-        logger: rootLogger,
-        pipelineOps: fakePipelineOps(),
-      });
-
-      assert.equal(afterRestart.downloaded, 0);
-      assert.equal(afterRestart.skipped, 2);
-    });
+test("dry run reports the plan and writes nothing at all", async () => {
+  await withTempDir(async (root) => {
+    const ops = fakeOps();
+    const summary = await cycle(makeConfig({ dryRun: true, playlists: playlists(["Rock", "p1"]) }), fakeSource({ p1: [a, b] }), ops, root);
+    assert.equal(summary.playlists[0]?.downloaded, 2);
+    assert.deepEqual(ops.resolved, []);
+    assert.deepEqual(await readdir(join(root, "music")).catch(() => []), []);
+    assert.equal(describeCycle(summary, true).includes("2 would be downloaded"), true);
   });
 });
 
-test("a slow playlist does not block a faster playlist from completing", async () => {
-  await withTempDir(async (musicRoot) => {
-    await withTempDir(async (tempDir) => {
-      const completionOrder: string[] = [];
-
-      const slowConfig: PlaylistConfig = {
-        id: "1",
-        name: "Slow",
-        url: "https://open.spotify.com/playlist/slow",
-        spotifyPlaylistId: "slow",
-        rootDir: musicRoot,
-      };
-      const fastConfig: PlaylistConfig = {
-        id: "2",
-        name: "Fast",
-        url: "https://open.spotify.com/playlist/fast",
-        spotifyPlaylistId: "fast",
-        rootDir: musicRoot,
-      };
-
-      const slowTracks = [
-        makeTrack("slow-1", "Slow One"),
-        makeTrack("slow-2", "Slow Two"),
-        makeTrack("slow-3", "Slow Three"),
-      ];
-      const fastTracks = [makeTrack("fast-1", "Fast One")];
-
-      const client: PlaylistTrackSource = {
-        getPlaylistTracks: async (playlistId) => ({
-          tracks: playlistId === "slow" ? slowTracks : fastTracks,
-          unavailableCount: 0,
-        }),
-      };
-
-      const trackingOps: PipelineOps = {
-        ...fakePipelineOps(),
-        downloadSource: async (_source, workDir, baseName) => {
-          if (baseName.startsWith("slow-")) {
-            await new Promise((resolve) => setTimeout(resolve, 30));
-          }
-          const path = join(workDir, `${baseName}.raw`);
-          await writeFile(path, "raw-audio");
-          return path;
-        },
-        commitFile: async (tempPathArg, finalPathArg) => {
-          const result = await commitFile(tempPathArg, finalPathArg);
-          completionOrder.push(finalPathArg);
-          return result;
-        },
-      };
-
-      const config: AppConfig = {
-        syncIntervalSec: 3600,
-        downloadConcurrency: 2,
-        tempDir,
-        maxSizeBytes: 0,
-        randomPlaylist: undefined,
-        spotify: TEST_SPOTIFY_CONFIG,
-        playlists: [slowConfig, fastConfig],
-      };
-
-      await runSyncCycle(config, rootLogger, undefined, {
-        spotifyClient: client,
-        pipelineOps: trackingOps,
-      });
-
-      const fastIndex = completionOrder.findIndex((p) => p.includes("Fast One"));
-      const lastSlowIndex = completionOrder.findIndex((p) => p.includes("Slow Three"));
-      assert.equal(fastIndex < lastSlowIndex, true);
-    });
+test("adopts the MP3s already in a folder without downloading them again", async () => {
+  await withTempDir(async (root) => {
+    await mkdir(join(root, "music", "Rock"), { recursive: true });
+    await writeFile(join(root, "music", "Rock", "Artist - Alpha.mp3"), "old download");
+    const ops = fakeOps();
+    const summary = await cycle(makeConfig({ playlists: playlists(["Rock", "p1"]) }), fakeSource({ p1: [a, b] }), ops, root);
+    assert.deepEqual(ops.resolved, ["b2"]);
+    assert.equal(summary.playlists[0]?.unchanged, 1);
+    const index = JSON.parse(await readFile(join(root, "music", "Rock", ".playlist2mp3.json"), "utf8")) as { tracks: Record<string, unknown> };
+    assert.deepEqual(Object.keys(index.tracks).sort(), ["a1", "b2"]);
   });
 });
 
-test("a track removed from Spotify's catalog is reported as unavailable and does not count as new or failed", async () => {
-  await withTempDir(async (musicRoot) => {
-    await withTempDir(async (tempDir) => {
-      const config: PlaylistConfig = {
-        id: "1",
-        name: "Rock",
-        url: "https://open.spotify.com/playlist/abc",
-        spotifyPlaylistId: "abc",
-        rootDir: musicRoot,
-      };
-      const client: PlaylistTrackSource = {
-        getPlaylistTracks: async () => ({
-          tracks: [makeTrack("t1", "Song One")],
-          unavailableCount: 1,
-        }),
-      };
-
-      const summary = await syncPlaylist(config, {
-        spotifyClient: client,
-        downloadSemaphore: new Semaphore(2),
-        tempDir,
-        logger: rootLogger,
-        pipelineOps: fakePipelineOps(),
-      });
-
-      assert.equal(summary.tracksFound, 1);
-      assert.equal(summary.tracksUnavailable, 1);
-      assert.equal(summary.tracksNew, 1);
-      assert.equal(summary.downloaded, 1);
-      assert.equal(summary.failed, 0);
-    });
+test("after a failed or interrupted cycle only the missing songs are retried", async () => {
+  await withTempDir(async (root) => {
+    const config = makeConfig({ playlists: playlists(["Rock", "p1"]) });
+    const source = fakeSource({ p1: [a, b, c] });
+    const first = await cycle(config, source, fakeOps(["b2"]), root);
+    assert.equal(first.playlists[0]?.failed, 1);
+    assert.equal((await files(root, "Rock")).includes("Artist - Beta.mp3"), false);
+    const ops = fakeOps();
+    await cycle(config, source, ops, root);
+    assert.deepEqual(ops.resolved, ["b2"]);
   });
 });
 
-test("a storage quota already at or above MAX_SIZE skips downloads for the cycle", async () => {
-  await withTempDir(async (musicRoot) => {
-    await withTempDir(async (tempDir) => {
-      const config: AppConfig = {
-        syncIntervalSec: 3600,
-        downloadConcurrency: 2,
-        tempDir,
-        maxSizeBytes: 1,
-        randomPlaylist: undefined,
-        spotify: TEST_SPOTIFY_CONFIG,
-        playlists: [
-          {
-            id: "1",
-            name: "Rock",
-            url: "https://open.spotify.com/playlist/abc",
-            spotifyPlaylistId: "abc",
-            rootDir: musicRoot,
-          },
-        ],
-      };
-      await mkdir(join(musicRoot, "Rock"), { recursive: true });
-      await writeFile(join(musicRoot, "Rock", "existing.bin"), "already-over-quota");
-
-      const client = fakeSpotifyClient(
-        new Map([["abc", [makeTrack("t1", "Song One")]]]),
-      );
-
-      const summary = await runSyncCycle(config, rootLogger, undefined, {
-        spotifyClient: client,
-        pipelineOps: fakePipelineOps(),
-      });
-
-      const rock = summary.playlistSummaries.find((p) => p.playlistName === "Rock");
-      assert.equal(rock?.downloaded, 0);
-      assert.equal(rock?.error?.includes("quota"), true);
-    });
+test("one broken playlist does not stop the others", async () => {
+  await withTempDir(async (root) => {
+    const summary = await cycle(
+      makeConfig({ playlists: playlists(["Broken", "bad"], ["Rock", "p1"]) }),
+      fakeSource({ p1: [a] }, ["bad"]),
+      fakeOps(),
+      root,
+    );
+    assert.equal(summary.playlists[0]?.error, "playlist bad is broken");
+    assert.equal(summary.playlists[1]?.downloaded, 1);
+    assert.equal(describeCycle(summary, false).includes("1 playlist errors"), true);
   });
 });
 
-test("a configured random playlist is fetched and synced alongside the regular ones", async () => {
-  await withTempDir(async (musicRoot) => {
-    await withTempDir(async (randomRoot) => {
-      await withTempDir(async (tempDir) => {
-        const config: AppConfig = {
-          syncIntervalSec: 3600,
-          downloadConcurrency: 2,
-          tempDir,
-          maxSizeBytes: 0,
-          randomPlaylist: { dir: randomRoot },
-          spotify: TEST_SPOTIFY_CONFIG,
-          playlists: [
-            {
-              id: "1",
-              name: "Rock",
-              url: "https://open.spotify.com/playlist/abc",
-              spotifyPlaylistId: "abc",
-              rootDir: musicRoot,
-            },
-          ],
-        };
-
-        const client: PlaylistTrackSource = {
-          getPlaylistTracks: async (playlistId) => ({
-            tracks:
-              playlistId === "abc"
-                ? [makeTrack("t1", "Song One")]
-                : [makeTrack("r1", "Random Song")],
-            unavailableCount: 0,
-          }),
-          findRandomPublicPlaylist: async () => ({
-            playlistId: "random123",
-            playlistName: "Discover Weekly Clone",
-          }),
-        };
-
-        const summary = await runSyncCycle(config, rootLogger, undefined, {
-          spotifyClient: client,
-          pipelineOps: fakePipelineOps(),
-        });
-
-        assert.equal(summary.playlistsProcessed, 2);
-        const random = summary.playlistSummaries.find((p) =>
-          p.playlistName.startsWith("Discover Weekly Clone"),
-        );
-        assert.equal(random?.downloaded, 1);
-        assert.equal(random?.error, undefined);
-
-        const files = await readdir(
-          join(randomRoot, "Discover Weekly Clone (random12)"),
-        );
-        assert.equal(files.length, 1);
-      });
-    });
+test("the concurrency limit is shared by all playlists", async () => {
+  await withTempDir(async (root) => {
+    const many = (prefix: string) => Array.from({ length: 6 }, (_, i) => makeTrack(`${prefix}${i}`, `${prefix} ${i}`));
+    const ops = fakeOps();
+    await cycle(makeConfig({ concurrency: 2, playlists: playlists(["One", "p1"], ["Two", "p2"]) }), fakeSource({ p1: many("x"), p2: many("y") }), ops, root);
+    assert.equal(ops.maxActive <= 2, true);
+    assert.equal(ops.resolved.length, 12);
   });
 });
 
-test("syncs a playlist larger than the embed cap and stays idempotent", async () => {
-  await withTempDir(async (musicRoot) => {
-    await withTempDir(async (tempDir) => {
-      const config: PlaylistConfig = {
-        id: "1",
-        name: "Big",
-        url: "https://open.spotify.com/playlist/big",
-        spotifyPlaylistId: "big",
-        rootDir: musicRoot,
-      };
-      const tracks = Array.from({ length: 250 }, (_, i) =>
-        makeTrack(`t${i}`, `Song ${i}`),
-      );
-      const client: PlaylistTrackSource = {
-        getPlaylistTracks: async () => ({
-          tracks,
-          unavailableCount: 0,
-          source: "partner" as const,
-        }),
-      };
-      const deps = {
-        spotifyClient: client,
-        downloadSemaphore: new Semaphore(4),
-        tempDir,
-        logger: rootLogger,
-        pipelineOps: fakePipelineOps(),
-      };
-
-      const first = await syncPlaylist(config, deps);
-      assert.equal(first.tracksFound, 250);
-      assert.equal(first.downloaded, 250);
-      assert.equal(first.failed, 0);
-
-      const second = await syncPlaylist(config, deps);
-      assert.equal(second.tracksNew, 0);
-      assert.equal(second.downloaded, 0);
-      assert.equal(second.skipped, 250);
-
-      const files = await readdir(join(musicRoot, "Big"));
-      assert.equal(files.length, 250);
-    });
-  });
-});
-
-test("tracks no longer playable or no longer in the playlist are removed, non-mp3 files are kept", async () => {
-  await withTempDir(async (musicRoot) => {
-    await withTempDir(async (tempDir) => {
-      const config: PlaylistConfig = {
-        id: "1",
-        name: "Rock",
-        url: "https://open.spotify.com/playlist/abc",
-        spotifyPlaylistId: "abc",
-        rootDir: musicRoot,
-      };
-      const playlistDir = join(musicRoot, "Rock");
-      await mkdir(playlistDir, { recursive: true });
-      await writeFile(join(playlistDir, "Artist - Song One.mp3"), "mp3-audio");
-      await writeFile(join(playlistDir, "Artist - Gone.mp3"), "mp3-audio");
-      await writeFile(join(playlistDir, "Artist - Blocked.mp3"), "mp3-audio");
-      await writeFile(join(playlistDir, "cover.jpg"), "image");
-      const client: PlaylistTrackSource = {
-        getPlaylistTracks: async () => ({
-          tracks: [makeTrack("t1", "Song One")],
-          unavailableCount: 1,
-          source: "partner",
-        }),
-      };
-
-      const summary = await syncPlaylist(config, {
-        spotifyClient: client,
-        downloadSemaphore: new Semaphore(2),
-        tempDir,
-        logger: rootLogger,
-        pipelineOps: fakePipelineOps(),
-      });
-
-      assert.equal(summary.removed, 2);
-      const files = (await readdir(playlistDir)).sort();
-      assert.deepEqual(files, ["Artist - Song One.mp3", "cover.jpg"]);
-    });
-  });
-});
-
-test("a possibly truncated embed track list never removes local files", async () => {
-  await withTempDir(async (musicRoot) => {
-    await withTempDir(async (tempDir) => {
-      const config: PlaylistConfig = {
-        id: "1",
-        name: "Rock",
-        url: "https://open.spotify.com/playlist/abc",
-        spotifyPlaylistId: "abc",
-        rootDir: musicRoot,
-      };
-      const playlistDir = join(musicRoot, "Rock");
-      await mkdir(playlistDir, { recursive: true });
-      await writeFile(join(playlistDir, "Artist - Track 101.mp3"), "mp3-audio");
-      const tracks = Array.from({ length: 100 }, (_, i) => makeTrack(`t${i}`, `Track ${i}`));
-      const client: PlaylistTrackSource = {
-        getPlaylistTracks: async () => ({ tracks, unavailableCount: 0, source: "embed" }),
-      };
-
-      const summary = await syncPlaylist(config, {
-        spotifyClient: client,
-        downloadSemaphore: new Semaphore(4),
-        tempDir,
-        logger: rootLogger,
-        pipelineOps: fakePipelineOps(),
-      });
-
-      assert.equal(summary.removed, 0);
-      assert.equal((await readdir(playlistDir)).includes("Artist - Track 101.mp3"), true);
-    });
+test("the random playlist goes to its own folder, limited to maxTracks", async () => {
+  await withTempDir(async (root) => {
+    const config = makeConfig({ random: { enabled: true, name: "Aleatoria", maxTracks: 2, mode: "mirror" } });
+    const summary = await cycle(config, fakeSource({ random: [a, b, c] }), fakeOps(), root);
+    assert.equal(summary.playlists[0]?.name, "Aleatoria");
+    assert.equal(summary.playlists[0]?.downloaded, 2);
+    assert.deepEqual(await files(root, "Aleatoria"), [".playlist2mp3.json", "Aleatoria.m3u", "Artist - Alpha.mp3", "Artist - Beta.mp3"]);
   });
 });

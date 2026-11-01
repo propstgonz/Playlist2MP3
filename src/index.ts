@@ -1,14 +1,51 @@
-import { mkdir } from "node:fs/promises";
-import { loadConfig, ConfigError } from "./config/index.js";
-import { rootLogger } from "./utils/logger.js";
-import { abortableSleep } from "./utils/concurrency.js";
-import { formatBytes } from "./utils/size.js";
-import { runSyncCycle } from "./sync/syncCycle.js";
+import { mkdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+import type { AppConfig } from "./types/index.js";
+import { ConfigError, loadConfig, runtimePaths } from "./config/load.js";
+import { configureLogger, errorMessage, rootLogger } from "./utils/logger.js";
+import { abortableSleep } from "./utils/duration.js";
+import { SpotifyClient } from "./playlist/spotify.js";
+import { createPipelineOps } from "./downloader/pipeline.js";
+import { describeCycle, runCycle } from "./sync/cycle.js";
+
+function applyLogging(config: AppConfig): void {
+  configureLogger({ level: config.logLevel, timezone: config.timezone });
+}
+
+function describeConfig(config: AppConfig): void {
+  rootLogger.info(
+    `Settings: every ${Math.round(config.syncIntervalMs / 60_000)} min, concurrency ${config.concurrency}, ` +
+      `log ${config.logLevel}, quality ${config.audioQuality}, strict matching ${config.matching.strict}` +
+      (config.dryRun ? ", DRY RUN (nothing is written)" : ""),
+  );
+  for (const playlist of config.playlists) {
+    rootLogger.info(`Playlist: ${playlist.name} [${playlist.mode}] ${playlist.url}`);
+  }
+  if (config.random.enabled) {
+    rootLogger.info(`Random playlist: ${config.random.name} [${config.random.mode}], up to ${config.random.maxTracks} tracks`);
+  }
+}
+
+async function reloadConfig(path: string, previous: AppConfig): Promise<AppConfig> {
+  try {
+    const next = await loadConfig(path);
+    applyLogging(next);
+    if (JSON.stringify(next) !== JSON.stringify(previous)) {
+      rootLogger.info("Configuration changed, applying it from this cycle on");
+      describeConfig(next);
+    }
+    return next;
+  } catch (error) {
+    rootLogger.error(`${errorMessage(error)} - keeping the previous configuration`);
+    return previous;
+  }
+}
 
 async function main(): Promise<void> {
-  let config;
+  const paths = runtimePaths();
+  let config: AppConfig;
   try {
-    config = loadConfig();
+    config = await loadConfig(paths.configFile);
   } catch (error) {
     if (error instanceof ConfigError) {
       rootLogger.error(`Configuration error: ${error.message}`);
@@ -17,64 +54,64 @@ async function main(): Promise<void> {
     }
     throw error;
   }
+  applyLogging(config);
+  rootLogger.info(`Playlist2MP3 starting (config ${paths.configFile}, music ${paths.musicDir})`);
+  describeConfig(config);
 
-  await mkdir(config.tempDir, { recursive: true });
-
-  rootLogger.info(
-    `Starting Playlist2MP3: ${config.playlists.length} playlist(s), sync interval ${config.syncIntervalSec}s, concurrency ${config.downloadConcurrency}` +
-      (config.maxSizeBytes > 0 ? `, storage quota ${formatBytes(config.maxSizeBytes)}` : "") +
-      (config.randomPlaylist ? `, random playlist enabled -> ${config.randomPlaylist.dir}` : ""),
-  );
-  for (const playlist of config.playlists) {
-    rootLogger.info(`Configured playlist: ${playlist.name} -> ${playlist.rootDir}`);
-  }
+  const workDir = join(paths.tempDir, ".playlist2mp3-work");
+  await rm(workDir, { recursive: true, force: true });
+  await mkdir(workDir, { recursive: true });
 
   const controller = new AbortController();
-  let shuttingDown = false;
-
   const shutdown = (signalName: string): void => {
-    if (shuttingDown) {
-      return;
+    if (!controller.signal.aborted) {
+      rootLogger.info(`Received ${signalName}, stopping`);
+      controller.abort();
     }
-    shuttingDown = true;
-    rootLogger.info(`Received ${signalName}, shutting down after current cycle`);
-    controller.abort();
   };
-
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
 
-  while (!shuttingDown) {
-    try {
-      const summary = await runSyncCycle(config, rootLogger, controller.signal);
-      const totalDownloaded = summary.playlistSummaries.reduce((sum, p) => sum + p.downloaded, 0);
-      const totalSkipped = summary.playlistSummaries.reduce((sum, p) => sum + p.skipped, 0);
-      const totalRemoved = summary.playlistSummaries.reduce((sum, p) => sum + p.removed, 0);
-      const totalFailed = summary.playlistSummaries.reduce((sum, p) => sum + p.failed, 0);
-      const totalErrors = summary.playlistSummaries.filter((p) => p.error !== undefined).length;
-      rootLogger.info(
-        `Cycle completed: ${summary.playlistsProcessed} playlists processed, ${totalDownloaded} downloaded, ${totalSkipped} skipped, ${totalRemoved} removed, ${totalFailed} failed, ${totalErrors} playlist errors, duration ${summary.durationMs}ms`,
-      );
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      rootLogger.error(`Sync cycle crashed unexpectedly: ${reason}`);
-    }
+  const deps = {
+    source: new SpotifyClient({ logger: rootLogger.child("spotify") }),
+    ops: createPipelineOps(),
+    musicDir: paths.musicDir,
+    tempDir: workDir,
+    logger: rootLogger,
+  };
 
-    if (shuttingDown) {
+  let first = true;
+  while (!controller.signal.aborted) {
+    if (!first) {
+      config = await reloadConfig(paths.configFile, config);
+    }
+    first = false;
+    try {
+      const summary = await runCycle(config, deps, controller.signal);
+      rootLogger.info(describeCycle(summary, config.dryRun));
+    } catch (error) {
+      if (controller.signal.aborted) {
+        break;
+      }
+      rootLogger.error(`Cycle crashed unexpectedly: ${errorMessage(error)}`);
+    }
+    if (controller.signal.aborted) {
       break;
     }
-
+    rootLogger.info(`Next check in ${Math.round(config.syncIntervalMs / 60_000)} min`);
     try {
-      await abortableSleep(config.syncIntervalSec * 1000, controller.signal);
-    } catch {
+      await abortableSleep(config.syncIntervalMs, controller.signal);
+    } catch (error) {
+      rootLogger.debug(`Wait interrupted: ${errorMessage(error)}`);
       break;
     }
   }
 
+  await rm(workDir, { recursive: true, force: true });
   rootLogger.info("Shutdown complete");
 }
 
-main().catch((error) => {
-  rootLogger.error(`Fatal error: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
+main().catch((error: unknown) => {
+  rootLogger.error(`Fatal error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
   process.exitCode = 1;
 });

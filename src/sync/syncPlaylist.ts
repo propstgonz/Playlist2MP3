@@ -1,169 +1,218 @@
-import type { PlaylistConfig, PlaylistSummary, SpotifyTrack } from "../types/index.js";
-import type { Logger } from "../utils/logger.js";
+import { mkdir, stat } from "node:fs/promises";
+import { join } from "node:path";
+import type { AppConfig, PlaylistSummary, SpotifyTrack, SyncMode } from "../types/index.js";
+import { errorMessage, type Logger } from "../utils/logger.js";
 import { runWithSemaphore, type Semaphore } from "../utils/concurrency.js";
-import {
-  ensurePlaylistDir,
-  computeTrackPaths,
-  fileExists,
-  removeUnlistedTracks,
-} from "../filesystem/store.js";
-import { runTrackPipeline, defaultPipelineOps, type PipelineOps } from "../downloader/pipeline.js";
-import { EMBED_TRACK_LIST_CAP, type PlaylistTrackSource } from "../playlist/spotifyClient.js";
+import { fileInDir, playlistDir, sanitizeSegment } from "../filesystem/paths.js";
+import { listMp3Files, removeIfExists, renameNoOverwrite, writeIfChanged } from "../filesystem/files.js";
+import { loadManifest, manifestPath, serializeManifest } from "../filesystem/manifest.js";
+import { runTrackPipeline, type PipelineOps } from "../downloader/pipeline.js";
+import type { PlaylistSource } from "../playlist/spotify.js";
+import { buildM3u, buildPlan, type PlanAction } from "./plan.js";
 
-export interface SyncPlaylistDeps {
-  readonly spotifyClient: PlaylistTrackSource;
-  readonly downloadSemaphore: Semaphore;
-  readonly tempDir: string;
-  readonly logger: Logger;
-  readonly pipelineOps?: PipelineOps;
+export interface SyncTarget {
+  readonly name: string;
+  readonly playlistId: string;
+  readonly mode: SyncMode;
+  readonly maxTracks?: number;
 }
 
-async function enrichTrack(
-  track: SpotifyTrack,
-  spotifyClient: PlaylistTrackSource,
-  logger: Logger,
-  signal?: AbortSignal,
-): Promise<SpotifyTrack> {
-  if (track.releaseYear !== undefined && track.coverUrl !== undefined) {
-    return track;
+export interface SyncDeps {
+  readonly config: AppConfig;
+  readonly source: PlaylistSource;
+  readonly semaphore: Semaphore;
+  readonly ops: PipelineOps;
+  readonly musicDir: string;
+  readonly tempDir: string;
+  readonly logger: Logger;
+}
+
+function label(track: SpotifyTrack): string {
+  return `${track.artists.join(", ")} - ${track.title}`;
+}
+
+function describeAction(action: PlanAction): string {
+  switch (action.kind) {
+    case "download":
+      return `download  ${label(action.track)} -> "${action.file}"`;
+    case "rename":
+      return `rename    "${action.from}" -> "${action.to}"`;
+    case "keep":
+      return `${action.adopted ? "adopt" : "keep"}      "${action.file}"`;
+    case "remove":
+      return `remove    "${action.file}" (id=${action.trackId})`;
   }
-  if (!spotifyClient.getTrackDetails) {
-    return track;
-  }
+}
+
+async function directoryExists(path: string): Promise<boolean> {
   try {
-    return await spotifyClient.getTrackDetails(track, signal);
+    return (await stat(path)).isDirectory();
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    logger.warn(
-      `Could not fetch extra metadata for "${track.title}" (id=${track.id}): ${reason}. ` +
-        "Continuing with basic metadata only.",
-    );
-    return track;
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
   }
+}
+
+function emptySummary(name: string, error: string): PlaylistSummary {
+  return { name, total: 0, unavailable: 0, downloaded: 0, renamed: 0, removed: 0, unchanged: 0, failed: 0, error };
 }
 
 export async function syncPlaylist(
-  config: PlaylistConfig,
-  deps: SyncPlaylistDeps,
+  target: SyncTarget,
+  deps: SyncDeps,
   signal?: AbortSignal,
 ): Promise<PlaylistSummary> {
-  const logger = deps.logger.child(config.name);
-  logger.info("Starting synchronization");
+  const { config } = deps;
+  const logger = deps.logger.child(target.name);
+  const dryRun = config.dryRun;
 
   try {
-    const playlistDir = await ensurePlaylistDir(config);
-
-    const { tracks, unavailableCount, source } = await deps.spotifyClient.getPlaylistTracks(
-      config.spotifyPlaylistId,
-      signal,
-    );
-    logger.info(
-      `Found ${tracks.length} tracks` +
-        (unavailableCount > 0
-          ? ` (${unavailableCount} more listed in the playlist are unavailable — local-only or removed from Spotify's catalog — and were not downloaded)`
-          : ""),
-    );
-    const listIsComplete = source === "partner" || tracks.length < EMBED_TRACK_LIST_CAP;
-    if (!listIsComplete) {
-      logger.warn(
-        `This playlist hit the ${EMBED_TRACK_LIST_CAP}-track limit of the embed fallback source. ` +
-          "Tracks beyond that point were not visible and were not synced.",
-      );
+    const dir = playlistDir(deps.musicDir, target.name);
+    const exists = await directoryExists(dir);
+    if (!exists && !dryRun) {
+      await mkdir(dir, { recursive: true });
     }
 
-    const trackPaths = computeTrackPaths(config, tracks);
-    const existenceChecks = await Promise.all(
-      tracks.map(async (track) => {
-        const path = trackPaths.get(track.id);
-        if (!path) {
-          return { track, exists: true };
-        }
-        return { track, exists: await fileExists(path) };
-      }),
+    const fetched = await deps.source.getPlaylist(target.playlistId, signal);
+    const tracks = target.maxTracks === undefined ? fetched.tracks : fetched.tracks.slice(0, target.maxTracks);
+    logger.info(
+      `Spotify: ${tracks.length} tracks` +
+        (fetched.unavailable > 0 ? `, ${fetched.unavailable} unavailable on Spotify (not downloaded)` : "") +
+        (fetched.source === "embed" ? " [embed list]" : ""),
     );
-    const missingTracks = existenceChecks
-      .filter((entry) => !entry.exists)
-      .map((entry) => entry.track);
+    if (!fetched.complete) {
+      logger.warn("The track list may be incomplete (embed list capped at 100). Nothing will be removed this cycle.");
+    }
 
-    logger.info(`${missingTracks.length} new tracks`);
+    const loaded = exists ? await loadManifest(dir, !dryRun) : { tracks: new Map<string, string>(), status: "missing" as const };
+    if (loaded.status === "corrupt") {
+      logger.warn("The folder index was unreadable; it was set aside and is being rebuilt from the files on disk");
+    }
+    const diskFiles = exists ? await listMp3Files(dir) : [];
 
+    const plan = buildPlan({
+      tracks,
+      manifest: loaded.tracks,
+      diskFiles,
+      mode: target.mode,
+      complete: fetched.complete,
+      fileNameTemplate: config.fileName,
+    });
+    for (const action of plan.actions) {
+      logger.debug(`plan: ${describeAction(action)}`);
+    }
+    if (plan.removalsBlocked > 0) {
+      logger.warn(`${plan.removalsBlocked} files no longer in the playlist were kept because the track list may be incomplete`);
+    }
+
+    const downloads = plan.actions.flatMap((a) => (a.kind === "download" ? [a] : []));
+    const renames = plan.actions.flatMap((a) => (a.kind === "rename" ? [a] : []));
+    const removals = plan.actions.flatMap((a) => (a.kind === "remove" ? [a] : []));
+    const adopted = plan.actions.filter((a) => a.kind === "keep" && a.adopted).length;
+    const unchanged = plan.actions.filter((a) => a.kind === "keep").length;
+
+    if (dryRun) {
+      for (const action of [...downloads, ...renames, ...removals]) {
+        logger.info(`[dry run] would ${describeAction(action)}`);
+      }
+      logger.info(
+        `[dry run] ${downloads.length} to download, ${renames.length} to rename, ${removals.length} to remove, ${unchanged} unchanged (${adopted} adopted)`,
+      );
+      return {
+        name: target.name,
+        total: tracks.length,
+        unavailable: fetched.unavailable,
+        downloaded: downloads.length,
+        renamed: renames.length,
+        removed: removals.length,
+        unchanged,
+        failed: 0,
+        error: undefined,
+      };
+    }
+
+    const manifest = new Map(plan.manifest);
+    let saving: Promise<unknown> = Promise.resolve();
+    const persist = (): Promise<unknown> => {
+      saving = saving.then(() => writeIfChanged(manifestPath(dir), serializeManifest(manifest)));
+      return saving;
+    };
+
+    let renamed = 0;
+    for (const action of renames) {
+      if (await renameNoOverwrite(fileInDir(dir, action.from), fileInDir(dir, action.to))) {
+        renamed += 1;
+        logger.info(`Renamed: "${action.from}" -> "${action.to}"`);
+      } else {
+        manifest.set(action.track.id, action.from);
+        logger.warn(`Could not rename "${action.from}": "${action.to}" already exists`);
+      }
+    }
+    for (const action of removals) {
+      await removeIfExists(fileInDir(dir, action.file));
+      logger.info(`Removed: "${action.file}" (no longer in the Spotify playlist)`);
+    }
+    if (adopted > 0) {
+      logger.info(`Adopted ${adopted} existing files into the folder index`);
+    }
+    await persist();
+
+    logger.info(`${downloads.length} new tracks to download`);
     let downloaded = 0;
-    let skipped = 0;
     let failed = 0;
-
     await runWithSemaphore(
-      deps.downloadSemaphore,
-      missingTracks,
-      async (track) => {
-        const finalPath = trackPaths.get(track.id);
-        if (!finalPath) {
+      deps.semaphore,
+      downloads,
+      async (action) => {
+        const outcome = await runTrackPipeline(
+          action.track,
+          fileInDir(dir, action.file),
+          {
+            tempDir: deps.tempDir,
+            audioQuality: config.audioQuality,
+            matching: config.matching,
+            logger,
+            signal,
+            enrich: deps.source.enrich?.bind(deps.source),
+          },
+          deps.ops,
+        );
+        if (outcome.status === "failed") {
           failed += 1;
           return;
         }
-        const enrichedTrack = await enrichTrack(track, deps.spotifyClient, logger, signal);
-        const outcome = await runTrackPipeline(
-          enrichedTrack,
-          finalPath,
-          { tempDir: deps.tempDir, logger, signal },
-          deps.pipelineOps ?? defaultPipelineOps,
-        );
+        manifest.set(action.track.id, action.file);
+        await persist();
         if (outcome.status === "downloaded") {
           downloaded += 1;
-        } else if (outcome.status === "skipped") {
-          skipped += 1;
-        } else {
-          failed += 1;
+          logger.info(`Downloaded: ${label(action.track)}${outcome.doubtful ? " (doubtful match)" : ""}`);
         }
       },
       signal,
     );
+    await saving;
 
-    skipped += tracks.length - missingTracks.length;
-
-    let removed = 0;
-    if (listIsComplete && tracks.length > 0 && !signal?.aborted) {
-      const removedFiles = await removeUnlistedTracks(
-        playlistDir,
-        trackPaths.values(),
-      );
-      for (const fileName of removedFiles) {
-        logger.info(`Removed "${fileName}" (no longer in the Spotify playlist)`);
-      }
-      removed = removedFiles.length;
-    } else {
-      logger.warn("Track list may be incomplete, skipping removal of local files");
-    }
+    await writeIfChanged(join(dir, `${sanitizeSegment(target.name)}.m3u`), buildM3u(tracks, manifest));
 
     logger.info(
-      `Synchronization completed: ${downloaded} downloaded, ${skipped} skipped, ${removed} removed, ${failed} failed`,
+      `Done: ${downloaded} downloaded, ${renamed} renamed, ${removals.length} removed, ${unchanged} unchanged, ${failed} failed`,
     );
-
     return {
-      playlistId: config.id,
-      playlistName: config.name,
-      tracksFound: tracks.length,
-      tracksUnavailable: unavailableCount,
-      tracksNew: missingTracks.length,
+      name: target.name,
+      total: tracks.length,
+      unavailable: fetched.unavailable,
       downloaded,
-      skipped,
-      removed,
+      renamed,
+      removed: removals.length,
+      unchanged,
       failed,
       error: undefined,
     };
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+    const reason = signal?.aborted ? "interrupted by shutdown" : errorMessage(error);
     logger.error(`Synchronization failed: ${reason}`);
-    return {
-      playlistId: config.id,
-      playlistName: config.name,
-      tracksFound: 0,
-      tracksUnavailable: 0,
-      tracksNew: 0,
-      downloaded: 0,
-      skipped: 0,
-      removed: 0,
-      failed: 0,
-      error: reason,
-    };
+    return emptySummary(target.name, reason);
   }
 }
