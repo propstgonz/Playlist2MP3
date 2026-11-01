@@ -1,107 +1,98 @@
-import { join } from "node:path";
-import type { SpotifyTrack, TrackOutcome } from "../types/index.js";
-import type { Logger } from "../utils/logger.js";
-import { withRetry, type RetryOptions } from "../utils/retry.js";
-import { resolveTrack } from "../resolver/ytdlpResolver.js";
-import { downloadSource } from "../downloader/download.js";
-import { convertToMp3 } from "../audio/convert.js";
+import type { MatchingSettings, SpotifyTrack, TrackStage } from "../types/index.js";
+import { errorMessage, type Logger } from "../utils/logger.js";
+import { withRetry } from "../utils/retry.js";
+import { commitFile, removeIfExists } from "../filesystem/files.js";
+import { resolveSource, type ResolvedSource } from "../resolver/resolve.js";
+import { runYtDlp, type CommandRunner } from "../resolver/search.js";
 import { tagMp3 } from "../audio/tag.js";
-import { commitFile, removeIfExists } from "../filesystem/store.js";
-
-export interface PipelineDeps {
-  readonly tempDir: string;
-  readonly logger: Logger;
-  readonly signal?: AbortSignal;
-  readonly retryOptions?: Partial<RetryOptions>;
-}
+import { downloadMp3 } from "./download.js";
 
 export interface PipelineOps {
-  readonly resolveTrack: typeof resolveTrack;
-  readonly downloadSource: typeof downloadSource;
-  readonly convertToMp3: typeof convertToMp3;
-  readonly tagMp3: typeof tagMp3;
-  readonly commitFile: typeof commitFile;
+  readonly resolve: (track: SpotifyTrack, settings: MatchingSettings, logger: Logger, signal?: AbortSignal) => Promise<ResolvedSource>;
+  readonly download: (source: ResolvedSource, tempDir: string, trackId: string, quality: string, signal?: AbortSignal) => Promise<string>;
+  readonly tag: (filePath: string, track: SpotifyTrack, logger: Logger) => Promise<void>;
+  readonly commit: (tempPath: string, finalPath: string) => Promise<boolean>;
 }
 
-export const defaultPipelineOps: PipelineOps = {
-  resolveTrack,
-  downloadSource,
-  convertToMp3,
-  tagMp3,
-  commitFile,
-};
+export function createPipelineOps(run: CommandRunner = runYtDlp): PipelineOps {
+  return {
+    resolve: (track, settings, logger, signal) => resolveSource(track, settings, run, logger, signal),
+    download: (source, tempDir, trackId, quality, signal) =>
+      downloadMp3(source.candidate, tempDir, trackId, quality, run, signal),
+    tag: tagMp3,
+    commit: commitFile,
+  };
+}
+
+export interface PipelineContext {
+  readonly tempDir: string;
+  readonly audioQuality: string;
+  readonly matching: MatchingSettings;
+  readonly logger: Logger;
+  readonly signal?: AbortSignal;
+  readonly enrich?: (track: SpotifyTrack, signal?: AbortSignal) => Promise<SpotifyTrack>;
+}
+
+export type PipelineOutcome =
+  | { readonly status: "downloaded"; readonly doubtful: boolean }
+  | { readonly status: "exists" }
+  | { readonly status: "failed"; readonly stage: TrackStage; readonly reason: string };
+
+function label(track: SpotifyTrack): string {
+  return `${track.artists.join(", ")} - ${track.title}`;
+}
+
+async function enrichTrack(track: SpotifyTrack, context: PipelineContext): Promise<SpotifyTrack> {
+  if (!context.enrich || (track.coverUrl !== undefined && track.releaseYear !== undefined)) {
+    return track;
+  }
+  try {
+    return await context.enrich(track, context.signal);
+  } catch (error) {
+    context.logger.debug(`Extra metadata unavailable for "${track.title}": ${errorMessage(error)}`);
+    return track;
+  }
+}
 
 export async function runTrackPipeline(
-  track: SpotifyTrack,
+  original: SpotifyTrack,
   finalPath: string,
-  deps: PipelineDeps,
-  ops: PipelineOps = defaultPipelineOps,
-): Promise<TrackOutcome> {
-  const { tempDir, logger, signal, retryOptions } = deps;
-  const baseName = track.id;
-  const rawTempPath = join(tempDir, `${baseName}.raw`);
-  const mp3TempPath = join(tempDir, `${baseName}.mp3`);
-
-  let downloadedPath: string | undefined;
+  context: PipelineContext,
+  ops: PipelineOps,
+): Promise<PipelineOutcome> {
+  const { logger, signal } = context;
+  let stage: TrackStage = "metadata";
+  let tempPath: string | undefined;
 
   try {
-    logger.debug(`Resolving source for: ${track.artists.join(", ")} - ${track.title}`);
-    const source = await withRetry(() => ops.resolveTrack(track, signal), {
-      signal,
-      ...retryOptions,
-    });
+    const track = await enrichTrack(original, context);
 
-    logger.info(`Downloading: ${track.artists.join(", ")} - ${track.title}`);
-    downloadedPath = await withRetry(
-      () => ops.downloadSource(source, tempDir, baseName, signal),
-      { signal, ...retryOptions },
+    stage = "searching";
+    const source = await ops.resolve(track, context.matching, logger, signal);
+    logger.debug(`Selected ${source.candidate.url} for "${label(track)}"`);
+
+    stage = "downloading";
+    tempPath = await withRetry(
+      () => ops.download(source, context.tempDir, track.id, context.audioQuality, signal),
+      { signal },
     );
 
-    await ops.convertToMp3(downloadedPath, mp3TempPath);
-    downloadedPath = undefined;
+    stage = "tagging";
+    await ops.tag(tempPath, track, logger);
 
-    await ops.tagMp3(mp3TempPath, track, logger);
-
-    const committed = await ops.commitFile(mp3TempPath, finalPath);
-    if (!committed) {
-      logger.debug(`Skipped, already exists: ${finalPath}`);
-      return { status: "skipped" };
-    }
-
-    logger.info(`Completed: ${track.artists.join(", ")} - ${track.title}`);
-    return { status: "downloaded" };
+    stage = "saving";
+    const committed = await ops.commit(tempPath, finalPath);
+    tempPath = undefined;
+    return committed ? { status: "downloaded", doubtful: source.doubtful } : { status: "exists" };
   } catch (error) {
-    if (downloadedPath) {
-      await removeIfExists(downloadedPath);
-    }
-    await removeIfExists(rawTempPath);
-    await removeIfExists(mp3TempPath);
-
-    const reason = error instanceof Error ? error.message : String(error);
-    const stage = classifyFailureStage(error);
+    const reason = errorMessage(error);
     logger.error(
-      `Failed: ${track.artists.join(", ")} - ${track.title} | id=${track.id} | stage=${stage} | reason=${reason}`,
+      `Failed: ${label(original)} | id=${original.id} | stage=${stage} | reason=${reason}`,
     );
     return { status: "failed", stage, reason };
-  }
-}
-
-function classifyFailureStage(
-  error: unknown,
-): "resolving" | "downloading" | "converting" | "tagging" | "committing" {
-  if (!(error instanceof Error)) {
-    return "resolving";
-  }
-  switch (error.name) {
-    case "ResolutionError":
-      return "resolving";
-    case "DownloadError":
-      return "downloading";
-    case "ConversionError":
-      return "converting";
-    case "TaggingError":
-      return "tagging";
-    default:
-      return "committing";
+  } finally {
+    if (tempPath !== undefined) {
+      await removeIfExists(tempPath);
+    }
   }
 }

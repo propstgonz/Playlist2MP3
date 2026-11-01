@@ -1,11 +1,12 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { randomBytes } from "node:crypto";
 import { readdir } from "node:fs/promises";
-import { join } from "node:path";
-import type { ResolvedSource } from "../types/index.js";
+import { basename, join } from "node:path";
+import type { Candidate } from "../types/index.js";
+import { errorMessage } from "../utils/logger.js";
+import { fileExists, removeIfExists } from "../filesystem/files.js";
+import { COMMON_ARGS, type CommandRunner } from "../resolver/search.js";
 
-const execFileAsync = promisify(execFile);
-const DOWNLOAD_TIMEOUT_MS = 300_000;
+const DOWNLOAD_TIMEOUT_MS = 600_000;
 
 export class DownloadError extends Error {
   constructor(message: string) {
@@ -14,39 +15,54 @@ export class DownloadError extends Error {
   }
 }
 
-export async function downloadSource(
-  source: ResolvedSource,
-  workDir: string,
-  baseName: string,
+async function removeLeftovers(tempDir: string, prefix: string): Promise<void> {
+  const entries = await readdir(tempDir).catch((error: unknown) => {
+    throw new DownloadError(`Cannot read temp directory ${tempDir}: ${errorMessage(error)}`);
+  });
+  await Promise.all(
+    entries.filter((name) => name.startsWith(prefix)).map((name) => removeIfExists(join(tempDir, name))),
+  );
+}
+
+export function qualityArg(quality: string): string {
+  return quality === "best" ? "0" : quality.toUpperCase();
+}
+
+export function downloadArgs(url: string, outputBase: string, quality: string): string[] {
+  return [
+    url,
+    "--format",
+    "bestaudio/best",
+    "--extract-audio",
+    "--audio-format",
+    "mp3",
+    "--audio-quality",
+    qualityArg(quality),
+    "--output",
+    `${outputBase}.%(ext)s`,
+    "--no-playlist",
+    ...COMMON_ARGS,
+  ];
+}
+
+export async function downloadMp3(
+  candidate: Candidate,
+  tempDir: string,
+  trackId: string,
+  quality: string,
+  run: CommandRunner,
   signal?: AbortSignal,
 ): Promise<string> {
-  const outputTemplate = join(workDir, `${baseName}.%(ext)s`);
-
+  const outputBase = join(tempDir, `${trackId}-${randomBytes(4).toString("hex")}`);
+  const mp3Path = `${outputBase}.mp3`;
   try {
-    await execFileAsync(
-      "yt-dlp",
-      [
-        source.sourceUrl,
-        "-f",
-        "bestaudio",
-        "-o",
-        outputTemplate,
-        "--no-playlist",
-        "--no-warnings",
-      ],
-      { timeout: DOWNLOAD_TIMEOUT_MS, signal, maxBuffer: 10 * 1024 * 1024 },
-    );
+    await run(downloadArgs(candidate.url, outputBase, quality), { timeoutMs: DOWNLOAD_TIMEOUT_MS, signal });
   } catch (error) {
-    throw new DownloadError(
-      `yt-dlp download failed for "${source.sourceUrl}": ${error instanceof Error ? error.message : String(error)}`,
-    );
+    await removeLeftovers(tempDir, basename(outputBase));
+    throw new DownloadError(`yt-dlp could not download ${candidate.url}: ${errorMessage(error)}`);
   }
-
-  const files = await readdir(workDir);
-  const downloaded = files.find((file) => file.startsWith(`${baseName}.`));
-  if (!downloaded) {
-    throw new DownloadError(`yt-dlp reported success but no output file was found for "${baseName}"`);
+  if (!(await fileExists(mp3Path))) {
+    throw new DownloadError(`yt-dlp finished but produced no MP3 for ${candidate.url}`);
   }
-
-  return join(workDir, downloaded);
+  return mp3Path;
 }
