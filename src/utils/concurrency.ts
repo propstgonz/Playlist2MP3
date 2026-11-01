@@ -18,14 +18,14 @@ export class Semaphore {
       return () => this.release();
     }
     return new Promise((resolve, reject) => {
-      const onAbort = () => {
+      const onAbort = (): void => {
         const index = this.queue.indexOf(grant);
         if (index !== -1) {
           this.queue.splice(index, 1);
         }
         reject(new Error("Aborted while waiting for semaphore slot"));
       };
-      const grant = () => {
+      const grant = (): void => {
         signal?.removeEventListener("abort", onAbort);
         resolve(() => this.release());
       };
@@ -60,31 +60,4 @@ export async function runWithSemaphore<T>(
       }
     }),
   );
-}
-
-export async function runWithLimit<T>(
-  limit: number,
-  items: readonly T[],
-  task: (item: T, index: number) => Promise<void>,
-  signal?: AbortSignal,
-): Promise<void> {
-  return runWithSemaphore(new Semaphore(limit), items, task, signal);
-}
-
-export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new Error("Aborted before sleep started"));
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new Error("Sleep aborted"));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
 }

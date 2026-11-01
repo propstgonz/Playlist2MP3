@@ -1,78 +1,80 @@
-export interface PlaylistConfig {
-  readonly id: string;
+export type SyncMode = "mirror" | "incremental";
+
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
+export interface PlaylistSettings {
   readonly name: string;
   readonly url: string;
-  readonly spotifyPlaylistId: string;
-  readonly rootDir: string;
+  readonly playlistId: string;
+  readonly mode: SyncMode;
 }
 
-export interface RandomPlaylistConfig {
-  readonly dir: string;
+export interface MatchingSettings {
+  readonly strict: boolean;
+  readonly durationToleranceSec: number;
+  readonly youtubeFallback: boolean;
 }
 
-export interface SpotifyConfig {
-  readonly fullCatalogEnabled: boolean;
-  readonly partnerQueryHash: string | undefined;
-  readonly pageDelayMs: number;
+export interface RandomSettings {
+  readonly enabled: boolean;
+  readonly name: string;
+  readonly maxTracks: number;
+  readonly mode: SyncMode;
 }
 
 export interface AppConfig {
-  readonly syncIntervalSec: number;
-  readonly downloadConcurrency: number;
-  readonly tempDir: string;
-  readonly maxSizeBytes: number;
-  readonly playlists: readonly PlaylistConfig[];
-  readonly randomPlaylist: RandomPlaylistConfig | undefined;
-  readonly spotify: SpotifyConfig;
+  readonly syncIntervalMs: number;
+  readonly concurrency: number;
+  readonly logLevel: LogLevel;
+  readonly timezone: string | undefined;
+  readonly dryRun: boolean;
+  readonly fileName: string;
+  readonly audioQuality: string;
+  readonly matching: MatchingSettings;
+  readonly random: RandomSettings;
+  readonly playlists: readonly PlaylistSettings[];
 }
 
 export interface SpotifyTrack {
   readonly id: string;
   readonly title: string;
   readonly artists: readonly string[];
+  readonly album: string | undefined;
   readonly durationMs: number;
-  readonly trackNumber: number;
+  readonly position: number;
   readonly releaseYear: number | undefined;
   readonly coverUrl: string | undefined;
 }
 
-export interface ResolvedSource {
-  readonly sourceUrl: string;
-  readonly sourceTitle: string;
-  readonly durationSec: number;
+export interface SpotifyPlaylist {
+  readonly tracks: readonly SpotifyTrack[];
+  readonly unavailable: number;
+  readonly complete: boolean;
 }
 
-export type PipelineStage =
-  | "resolving"
-  | "downloading"
-  | "converting"
-  | "tagging"
-  | "committing";
+export type CandidateSource = "ytmusic" | "youtube";
 
-export type TrackOutcome =
-  | { readonly status: "downloaded" }
-  | { readonly status: "skipped" }
-  | {
-      readonly status: "failed";
-      readonly stage: PipelineStage;
-      readonly reason: string;
-    };
+export interface Candidate {
+  readonly source: CandidateSource;
+  readonly url: string;
+  readonly title: string;
+  readonly track: string | undefined;
+  readonly artists: readonly string[];
+  readonly channel: string;
+  readonly album: string | undefined;
+  readonly durationSec: number | undefined;
+}
+
+export type TrackStage = "metadata" | "searching" | "downloading" | "tagging" | "saving";
 
 export interface PlaylistSummary {
-  readonly playlistId: string;
-  readonly playlistName: string;
-  readonly tracksFound: number;
-  readonly tracksUnavailable: number;
-  readonly tracksNew: number;
+  readonly name: string;
+  readonly total: number;
+  readonly unavailable: number;
   readonly downloaded: number;
-  readonly skipped: number;
+  readonly renamed: number;
   readonly removed: number;
+  readonly unchanged: number;
   readonly failed: number;
   readonly error: string | undefined;
-}
-
-export interface SyncSummary {
-  readonly playlistsProcessed: number;
-  readonly playlistSummaries: readonly PlaylistSummary[];
-  readonly durationMs: number;
 }
