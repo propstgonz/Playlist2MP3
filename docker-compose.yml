@@ -7,3 +7,4 @@ services:
       - .env
     volumes:
       - ${MUSIC_HOST_DIR}:/music
+      - ./config.json:/app/config.json:ro

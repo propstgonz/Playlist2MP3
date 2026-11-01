@@ -1,22 +1,35 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parsePlaylistConfigs, extractSpotifyPlaylistId, ConfigError } from "../src/config/playlists.js";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  parsePlaylistConfigs,
+  extractSpotifyPlaylistId,
+  readConfigFile,
+  ConfigError,
+} from "../src/config/playlists.js";
 
-test("parses multiple playlists from unordered env keys", () => {
-  const env = {
-    PLAYLIST_2_NAME: "Electronic",
-    PLAYLIST_2_URL: "https://open.spotify.com/playlist/2222222222222222222222",
-    PLAYLIST_2_DIR: "/music",
-    PLAYLIST_1_NAME: "Rock",
-    PLAYLIST_1_URL: "https://open.spotify.com/playlist/1111111111111111111111",
-    PLAYLIST_1_DIR: "/music",
-  };
-
-  const configs = parsePlaylistConfigs(env);
+test("parses multiple playlists in file order", () => {
+  const configs = parsePlaylistConfigs({
+    playlists: [
+      { name: "Rock", url: "https://open.spotify.com/playlist/1111111111111111111111", dir: "/music" },
+      { name: "Electronic", url: "https://open.spotify.com/playlist/2222222222222222222222", dir: "/other" },
+    ],
+  });
 
   assert.equal(configs.length, 2);
   assert.equal(configs[0]?.name, "Rock");
+  assert.equal(configs[0]?.id, "1");
   assert.equal(configs[1]?.name, "Electronic");
+  assert.equal(configs[1]?.rootDir, "/other");
+});
+
+test("defaults dir to /music when omitted", () => {
+  const configs = parsePlaylistConfigs({
+    playlists: [{ name: "Rock", url: "https://open.spotify.com/playlist/1111111111111111111111" }],
+  });
+  assert.equal(configs[0]?.rootDir, "/music");
 });
 
 test("extracts playlist id from open.spotify.com URL", () => {
@@ -35,41 +48,50 @@ test("rejects a non-Spotify-playlist URL", () => {
   assert.throws(() => extractSpotifyPlaylistId("https://example.com/not-spotify"), ConfigError);
 });
 
-test("throws on incomplete entry missing DIR", () => {
-  const env = {
-    PLAYLIST_1_NAME: "Rock",
-    PLAYLIST_1_URL: "https://open.spotify.com/playlist/1111111111111111111111",
-  };
-  assert.throws(() => parsePlaylistConfigs(env), (error: unknown) => {
-    return error instanceof ConfigError && error.message.includes("PLAYLIST_1_DIR");
+test("throws on entry missing name and url", () => {
+  assert.throws(() => parsePlaylistConfigs({ playlists: [{ dir: "/music" }] }), (error: unknown) => {
+    return error instanceof ConfigError && error.message.includes("name, url");
   });
 });
 
-test("throws on incomplete entry missing NAME and DIR", () => {
-  const env = {
-    PLAYLIST_1_URL: "https://open.spotify.com/playlist/1111111111111111111111",
-  };
-  assert.throws(() => parsePlaylistConfigs(env), (error: unknown) => {
-    return (
-      error instanceof ConfigError &&
-      error.message.includes("PLAYLIST_1_NAME") &&
-      error.message.includes("PLAYLIST_1_DIR")
-    );
-  });
+test("throws on non-string fields", () => {
+  assert.throws(
+    () => parsePlaylistConfigs({ playlists: [{ name: 5, url: "spotify:playlist:abc" }] }),
+    ConfigError,
+  );
 });
 
-test("throws on duplicate name+dir pair across different indices", () => {
-  const env = {
-    PLAYLIST_1_NAME: "Rock",
-    PLAYLIST_1_URL: "https://open.spotify.com/playlist/1111111111111111111111",
-    PLAYLIST_1_DIR: "/music",
-    PLAYLIST_2_NAME: "Rock",
-    PLAYLIST_2_URL: "https://open.spotify.com/playlist/2222222222222222222222",
-    PLAYLIST_2_DIR: "/music",
-  };
-  assert.throws(() => parsePlaylistConfigs(env), ConfigError);
+test("throws on duplicate name+dir pair", () => {
+  assert.throws(
+    () =>
+      parsePlaylistConfigs({
+        playlists: [
+          { name: "Rock", url: "https://open.spotify.com/playlist/1111111111111111111111" },
+          { name: "Rock", url: "https://open.spotify.com/playlist/2222222222222222222222" },
+        ],
+      }),
+    ConfigError,
+  );
 });
 
-test("throws when no playlists are configured", () => {
+test("throws when playlists is missing, not an array, or empty", () => {
   assert.throws(() => parsePlaylistConfigs({}), ConfigError);
+  assert.throws(() => parsePlaylistConfigs(null), ConfigError);
+  assert.throws(() => parsePlaylistConfigs({ playlists: "Rock" }), ConfigError);
+  assert.throws(() => parsePlaylistConfigs({ playlists: [] }), ConfigError);
+});
+
+test("readConfigFile parses JSON and reports missing or malformed files", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "playlist2mp3-config-"));
+  try {
+    const valid = join(dir, "config.json");
+    const broken = join(dir, "broken.json");
+    await writeFile(valid, '{"playlists":[]}');
+    await writeFile(broken, "{ not json");
+    assert.deepEqual(readConfigFile(valid), { playlists: [] });
+    assert.throws(() => readConfigFile(broken), ConfigError);
+    assert.throws(() => readConfigFile(join(dir, "missing.json")), ConfigError);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -63,7 +63,6 @@ export interface PartnerTracksResult {
   readonly playlistName: string | undefined;
   readonly tracks: readonly SpotifyTrack[];
   readonly unavailableCount: number;
-  readonly unavailableTracks: readonly SpotifyTrack[];
   readonly totalCount: number;
 }
 
@@ -185,7 +184,6 @@ export async function fetchPartnerPlaylistTracks(
 ): Promise<PartnerTracksResult> {
   const collected = new Map<string, SpotifyTrack>();
   let unavailableCount = 0;
-  const unavailableTracks: SpotifyTrack[] = [];
   let playlistName: string | undefined;
   let totalCount = 0;
   let offset = 0;
@@ -220,10 +218,18 @@ export async function fetchPartnerPlaylistTracks(
         unavailableCount += 1;
         return;
       }
+      if (track.playability?.playable === false) {
+        unavailableCount += 1;
+        return;
+      }
+      if (collected.has(id)) {
+        return;
+      }
       const artists = (track.artists?.items ?? [])
         .map((artist) => artist.profile?.name ?? "")
         .filter((name) => name !== "");
-      const mapped: SpotifyTrack = {
+
+      collected.set(id, {
         id,
         title,
         artists: artists.length > 0 ? artists : ["Unknown Artist"],
@@ -231,15 +237,7 @@ export async function fetchPartnerPlaylistTracks(
         trackNumber: offset + indexInPage + 1,
         releaseYear: parseReleaseYear(track.albumOfTrack?.date?.isoString),
         coverUrl: pickLargestCover(track.albumOfTrack?.coverArt?.sources),
-      };
-      if (track.playability?.playable === false) {
-        unavailableCount += 1;
-        unavailableTracks.push(mapped);
-        return;
-      }
-      if (!collected.has(id)) {
-        collected.set(id, mapped);
-      }
+      });
     });
 
     offset += items.length;
@@ -267,7 +265,6 @@ export async function fetchPartnerPlaylistTracks(
     playlistName,
     tracks: [...collected.values()],
     unavailableCount,
-    unavailableTracks,
     totalCount,
   };
 }

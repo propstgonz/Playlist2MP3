@@ -6,11 +6,14 @@ import {
   parseNonNegativeInt,
   parsePartnerQueryHash,
 } from "./env.js";
-import { parsePlaylistConfigs, parseRandomPlaylistConfig } from "./playlists.js";
+import { parsePlaylistConfigs, parseRandomPlaylistConfig, readConfigFile } from "./playlists.js";
 
 export { ConfigError } from "./playlists.js";
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+export function loadConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  fileConfig: unknown = readConfigFile(env["CONFIG_FILE"] ?? "config.json"),
+): AppConfig {
   const syncIntervalSec = parsePositiveInt(env["SYNC_INTERVAL"], 86400, "SYNC_INTERVAL");
   const downloadConcurrency = parsePositiveInt(
     env["DOWNLOAD_CONCURRENCY"],
@@ -19,7 +22,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   );
   const tempDir = env["TEMP_DIR"] ?? "/tmp/playlist2mp3";
   const maxSizeBytes = parseByteSize(env["MAX_SIZE"], "MAX_SIZE");
-  const playlists = parsePlaylistConfigs(env);
+  const playlists = parsePlaylistConfigs(fileConfig);
   const randomPlaylist = parseRandomPlaylistConfig(env);
   const spotify = {
     fullCatalogEnabled: parseBoolean(

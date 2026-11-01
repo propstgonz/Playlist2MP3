@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { PlaylistConfig, RandomPlaylistConfig } from "../types/index.js";
 
 export class ConfigError extends Error {
@@ -7,17 +8,11 @@ export class ConfigError extends Error {
   }
 }
 
-const PLAYLIST_KEY_PATTERN = /^PLAYLIST_(\d+)_(NAME|URL|DIR)$/;
+const DEFAULT_PLAYLIST_DIR = "/music";
 
 const SPOTIFY_PLAYLIST_URL_PATTERN =
   /^https:\/\/open\.spotify\.com\/playlist\/([a-zA-Z0-9]+)(?:\?.*)?$/;
 const SPOTIFY_PLAYLIST_URI_PATTERN = /^spotify:playlist:([a-zA-Z0-9]+)$/;
-
-interface RawPlaylistEntry {
-  name?: string;
-  url?: string;
-  dir?: string;
-}
 
 export function extractSpotifyPlaylistId(url: string): string {
   const trimmed = url.trim();
@@ -34,49 +29,64 @@ export function extractSpotifyPlaylistId(url: string): string {
   );
 }
 
-export function parsePlaylistConfigs(
-  env: NodeJS.ProcessEnv,
-): readonly PlaylistConfig[] {
-  const entries = new Map<string, RawPlaylistEntry>();
+function readStringField(entry: Record<string, unknown>, field: string, index: string): string | undefined {
+  const value = entry[field];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    throw new ConfigError(`Playlist ${index}: "${field}" must be a string`);
+  }
+  return value.trim() === "" ? undefined : value.trim();
+}
 
-  for (const [key, value] of Object.entries(env)) {
-    const match = PLAYLIST_KEY_PATTERN.exec(key);
-    if (!match || value === undefined || value === "") {
-      continue;
-    }
-    const index = match[1] as string;
-    const field = match[2] as "NAME" | "URL" | "DIR";
-    const entry = entries.get(index) ?? {};
-    if (field === "NAME") {
-      entry.name = value;
-    } else if (field === "URL") {
-      entry.url = value;
-    } else {
-      entry.dir = value;
-    }
-    entries.set(index, entry);
+export function readConfigFile(path: string): unknown {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new ConfigError(
+      `Cannot read playlist config file "${path}" (${reason}). Copy config.example.json to config.json and edit it.`,
+    );
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new ConfigError(`Playlist config file "${path}" is not valid JSON: ${reason}`);
+  }
+}
+
+export function parsePlaylistConfigs(fileConfig: unknown): readonly PlaylistConfig[] {
+  const rawPlaylists =
+    typeof fileConfig === "object" && fileConfig !== null
+      ? (fileConfig as Record<string, unknown>)["playlists"]
+      : undefined;
+  if (!Array.isArray(rawPlaylists)) {
+    throw new ConfigError('Playlist config must be an object with a "playlists" array.');
   }
 
-  const sortedIndices = [...entries.keys()].sort((a, b) => Number(a) - Number(b));
   const configs: PlaylistConfig[] = [];
   const seenNameDirPairs = new Set<string>();
 
-  for (const index of sortedIndices) {
-    const entry = entries.get(index) as RawPlaylistEntry;
-    const missing: string[] = [];
-    if (!entry.name) missing.push(`PLAYLIST_${index}_NAME`);
-    if (!entry.url) missing.push(`PLAYLIST_${index}_URL`);
-    if (!entry.dir) missing.push(`PLAYLIST_${index}_DIR`);
+  for (const [position, rawEntry] of rawPlaylists.entries()) {
+    const index = String(position + 1);
+    if (typeof rawEntry !== "object" || rawEntry === null || Array.isArray(rawEntry)) {
+      throw new ConfigError(`Playlist ${index}: each entry must be an object with "name" and "url"`);
+    }
+    const entry = rawEntry as Record<string, unknown>;
+    const name = readStringField(entry, "name", index);
+    const url = readStringField(entry, "url", index);
+    const dir = readStringField(entry, "dir", index) ?? DEFAULT_PLAYLIST_DIR;
 
-    if (missing.length > 0) {
+    if (name === undefined || url === undefined) {
+      const missing = name === undefined ? (url === undefined ? "name, url" : "name") : "url";
       throw new ConfigError(
-        `Incomplete playlist configuration for index ${index}: missing ${missing.join(", ")}`,
+        `Incomplete playlist configuration for playlist ${index}: missing ${missing}`,
       );
     }
 
-    const name = entry.name as string;
-    const url = entry.url as string;
-    const dir = entry.dir as string;
     const spotifyPlaylistId = extractSpotifyPlaylistId(url);
 
     const pairKey = `${dir}::${name}`;
@@ -98,7 +108,7 @@ export function parsePlaylistConfigs(
 
   if (configs.length === 0) {
     throw new ConfigError(
-      "No playlists configured. Define at least PLAYLIST_1_NAME, PLAYLIST_1_URL and PLAYLIST_1_DIR.",
+      'No playlists configured. Add at least one { "name": ..., "url": ... } entry to "playlists" in config.json.',
     );
   }
 

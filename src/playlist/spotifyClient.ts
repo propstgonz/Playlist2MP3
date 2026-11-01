@@ -45,7 +45,6 @@ export type TrackSourceKind = "partner" | "embed";
 export interface PlaylistTracksResult {
   readonly tracks: readonly SpotifyTrack[];
   readonly unavailableCount: number;
-  readonly unavailableTracks?: readonly SpotifyTrack[];
   readonly source?: TrackSourceKind;
 }
 
@@ -80,42 +79,35 @@ function pickLargestImage(images: readonly EmbedImage[] | undefined): string | u
   ).url;
 }
 
-function mapEmbedItem(id: string, item: EmbedPlaylistTrackItem, index: number): SpotifyTrack {
-  return {
-    id,
-    title: item.title,
-    artists: [item.subtitle],
-    durationMs: item.duration,
-    trackNumber: index + 1,
-    releaseYear: undefined,
-    coverUrl: undefined,
-  };
-}
-
 function mapEmbedTracks(entity: EmbedPlaylistEntity): PlaylistTracksResult {
   const seen = new Map<string, SpotifyTrack>();
   let unavailableCount = 0;
-  const unavailableTracks: SpotifyTrack[] = [];
 
   entity.trackList.forEach((item, index) => {
     if (item.entityType !== "track") {
       return;
     }
-    const id = TRACK_URI_PATTERN.exec(item.uri)?.[1];
     if (!item.isPlayable || item.title.trim() === "") {
       unavailableCount += 1;
-      if (id && item.title.trim() !== "") {
-        unavailableTracks.push(mapEmbedItem(id, item, index));
-      }
       return;
     }
+    const match = TRACK_URI_PATTERN.exec(item.uri);
+    const id = match?.[1];
     if (!id || seen.has(id)) {
       return;
     }
-    seen.set(id, mapEmbedItem(id, item, index));
+    seen.set(id, {
+      id,
+      title: item.title,
+      artists: [item.subtitle],
+      durationMs: item.duration,
+      trackNumber: index + 1,
+      releaseYear: undefined,
+      coverUrl: undefined,
+    });
   });
 
-  return { tracks: [...seen.values()], unavailableCount, unavailableTracks, source: "embed" };
+  return { tracks: [...seen.values()], unavailableCount, source: "embed" };
 }
 
 export class SpotifyClient implements PlaylistTrackSource {
@@ -206,7 +198,6 @@ export class SpotifyClient implements PlaylistTrackSource {
       return {
         tracks: partner.tracks,
         unavailableCount: partner.unavailableCount,
-        unavailableTracks: partner.unavailableTracks,
         source: "partner",
       };
     } catch (error) {

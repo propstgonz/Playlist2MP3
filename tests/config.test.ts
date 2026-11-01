@@ -2,16 +2,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadConfig, ConfigError } from "../src/config/index.js";
 
+const FILE_CONFIG = {
+  playlists: [{ name: "Rock", url: "https://open.spotify.com/playlist/1111111111111111111111" }],
+};
+
 function baseEnv(): NodeJS.ProcessEnv {
-  return {
-    PLAYLIST_1_NAME: "Rock",
-    PLAYLIST_1_URL: "https://open.spotify.com/playlist/1111111111111111111111",
-    PLAYLIST_1_DIR: "/music",
-  };
+  return {};
 }
 
 test("loads defaults when optional variables are absent", () => {
-  const config = loadConfig(baseEnv());
+  const config = loadConfig(baseEnv(), FILE_CONFIG);
   assert.equal(config.syncIntervalSec, 86400);
   assert.equal(config.downloadConcurrency, 2);
   assert.equal(config.tempDir, "/tmp/playlist2mp3");
@@ -21,37 +21,37 @@ test("loads defaults when optional variables are absent", () => {
 });
 
 test("treats an absent, empty or zero MAX_SIZE as unlimited storage", () => {
-  assert.equal(loadConfig(baseEnv()).maxSizeBytes, 0);
-  assert.equal(loadConfig({ ...baseEnv(), MAX_SIZE: "" }).maxSizeBytes, 0);
-  assert.equal(loadConfig({ ...baseEnv(), MAX_SIZE: "0" }).maxSizeBytes, 0);
+  assert.equal(loadConfig(baseEnv(), FILE_CONFIG).maxSizeBytes, 0);
+  assert.equal(loadConfig({ ...baseEnv(), MAX_SIZE: "" }, FILE_CONFIG).maxSizeBytes, 0);
+  assert.equal(loadConfig({ ...baseEnv(), MAX_SIZE: "0" }, FILE_CONFIG).maxSizeBytes, 0);
 });
 
 test("parses MAX_SIZE suffixes into bytes", () => {
-  assert.equal(loadConfig({ ...baseEnv(), MAX_SIZE: "500M" }).maxSizeBytes, 500 * 1024 ** 2);
-  assert.equal(loadConfig({ ...baseEnv(), MAX_SIZE: "1G" }).maxSizeBytes, 1024 ** 3);
-  assert.equal(loadConfig({ ...baseEnv(), MAX_SIZE: "2048" }).maxSizeBytes, 2048);
+  assert.equal(loadConfig({ ...baseEnv(), MAX_SIZE: "500M" }, FILE_CONFIG).maxSizeBytes, 500 * 1024 ** 2);
+  assert.equal(loadConfig({ ...baseEnv(), MAX_SIZE: "1G" }, FILE_CONFIG).maxSizeBytes, 1024 ** 3);
+  assert.equal(loadConfig({ ...baseEnv(), MAX_SIZE: "2048" }, FILE_CONFIG).maxSizeBytes, 2048);
 });
 
 test("rejects a malformed MAX_SIZE", () => {
   assert.throws(
-    () => loadConfig({ ...baseEnv(), MAX_SIZE: "not-a-size" }),
+    () => loadConfig({ ...baseEnv(), MAX_SIZE: "not-a-size" }, FILE_CONFIG),
     (error: unknown) => error instanceof ConfigError && error.message.includes("MAX_SIZE"),
   );
 });
 
 test("enables the random playlist feature only when RANDOM_PLAYLIST is truthy", () => {
-  assert.equal(loadConfig({ ...baseEnv(), RANDOM_PLAYLIST: "false" }).randomPlaylist, undefined);
+  assert.equal(loadConfig({ ...baseEnv(), RANDOM_PLAYLIST: "false" }, FILE_CONFIG).randomPlaylist, undefined);
   const config = loadConfig({
     ...baseEnv(),
     RANDOM_PLAYLIST: "true",
     RANDOM_PLAYLIST_DIR: "/music/random",
-  });
+  }, FILE_CONFIG);
   assert.deepEqual(config.randomPlaylist, { dir: "/music/random" });
 });
 
 test("requires RANDOM_PLAYLIST_DIR when RANDOM_PLAYLIST is enabled", () => {
   assert.throws(
-    () => loadConfig({ ...baseEnv(), RANDOM_PLAYLIST: "true" }),
+    () => loadConfig({ ...baseEnv(), RANDOM_PLAYLIST: "true" }, FILE_CONFIG),
     (error: unknown) =>
       error instanceof ConfigError && error.message.includes("RANDOM_PLAYLIST_DIR"),
   );
@@ -63,7 +63,7 @@ test("applies explicit SYNC_INTERVAL, DOWNLOAD_CONCURRENCY and TEMP_DIR", () => 
     SYNC_INTERVAL: "3600",
     DOWNLOAD_CONCURRENCY: "5",
     TEMP_DIR: "/custom/temp",
-  });
+  }, FILE_CONFIG);
   assert.equal(config.syncIntervalSec, 3600);
   assert.equal(config.downloadConcurrency, 5);
   assert.equal(config.tempDir, "/custom/temp");
@@ -71,29 +71,29 @@ test("applies explicit SYNC_INTERVAL, DOWNLOAD_CONCURRENCY and TEMP_DIR", () => 
 
 test("rejects a non-integer SYNC_INTERVAL", () => {
   assert.throws(
-    () => loadConfig({ ...baseEnv(), SYNC_INTERVAL: "not-a-number" }),
+    () => loadConfig({ ...baseEnv(), SYNC_INTERVAL: "not-a-number" }, FILE_CONFIG),
     (error: unknown) => error instanceof ConfigError && error.message.includes("SYNC_INTERVAL"),
   );
 });
 
 test("rejects a zero or negative DOWNLOAD_CONCURRENCY", () => {
   assert.throws(
-    () => loadConfig({ ...baseEnv(), DOWNLOAD_CONCURRENCY: "0" }),
+    () => loadConfig({ ...baseEnv(), DOWNLOAD_CONCURRENCY: "0" }, FILE_CONFIG),
     (error: unknown) =>
       error instanceof ConfigError && error.message.includes("DOWNLOAD_CONCURRENCY"),
   );
 });
 
 test("surfaces the underlying playlist configuration error", () => {
-  assert.throws(() => loadConfig({ PLAYLIST_1_URL: "https://open.spotify.com/playlist/x" }), ConfigError);
+  assert.throws(() => loadConfig({}, { playlists: [{ name: "Rock", url: "https://example.com/not-spotify" }] }), ConfigError);
 });
 
 test("requires at least one playlist to be configured", () => {
-  assert.throws(() => loadConfig({}), ConfigError);
+  assert.throws(() => loadConfig({}, { playlists: [] }), ConfigError);
 });
 
 test("defaults the Spotify full-catalog source to enabled", () => {
-  const config = loadConfig(baseEnv());
+  const config = loadConfig(baseEnv(), FILE_CONFIG);
   assert.equal(config.spotify.fullCatalogEnabled, true);
   assert.equal(config.spotify.partnerQueryHash, undefined);
   assert.equal(config.spotify.pageDelayMs, 250);
@@ -106,7 +106,7 @@ test("parses the Spotify full-catalog overrides", () => {
     SPOTIFY_FULL_CATALOG: "false",
     SPOTIFY_PARTNER_HASH: hash.toUpperCase(),
     SPOTIFY_PAGE_DELAY_MS: "0",
-  });
+  }, FILE_CONFIG);
   assert.equal(config.spotify.fullCatalogEnabled, false);
   assert.equal(config.spotify.partnerQueryHash, hash);
   assert.equal(config.spotify.pageDelayMs, 0);
@@ -114,11 +114,11 @@ test("parses the Spotify full-catalog overrides", () => {
 
 test("rejects an invalid SPOTIFY_PARTNER_HASH", () => {
   assert.throws(
-    () => loadConfig({ ...baseEnv(), SPOTIFY_PARTNER_HASH: "not-a-hash" }),
+    () => loadConfig({ ...baseEnv(), SPOTIFY_PARTNER_HASH: "not-a-hash" }, FILE_CONFIG),
     ConfigError,
   );
 });
 
 test("rejects an invalid SPOTIFY_FULL_CATALOG value", () => {
-  assert.throws(() => loadConfig({ ...baseEnv(), SPOTIFY_FULL_CATALOG: "maybe" }), ConfigError);
+  assert.throws(() => loadConfig({ ...baseEnv(), SPOTIFY_FULL_CATALOG: "maybe" }, FILE_CONFIG), ConfigError);
 });

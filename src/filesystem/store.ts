@@ -9,20 +9,6 @@ import {
   resolveTrackPathWithSuffix,
 } from "./paths.js";
 
-export function computeKeepPaths(
-  config: PlaylistConfig,
-  trackPaths: ReadonlyMap<string, string>,
-  unavailableTracks: readonly SpotifyTrack[],
-): string[] {
-  return [
-    ...trackPaths.values(),
-    ...unavailableTracks.flatMap((track) => [
-      resolveTrackPath(config, track),
-      resolveTrackPathWithSuffix(config, track),
-    ]),
-  ];
-}
-
 export async function ensurePlaylistDir(config: PlaylistConfig): Promise<string> {
   const dir = resolvePlaylistDir(config);
   await mkdir(dir, { recursive: true });

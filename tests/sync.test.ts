@@ -542,7 +542,7 @@ test("syncs a playlist larger than the embed cap and stays idempotent", async ()
   });
 });
 
-test("tracks no longer in the playlist are removed, unavailable and non-mp3 files are kept", async () => {
+test("tracks no longer playable or no longer in the playlist are removed, non-mp3 files are kept", async () => {
   await withTempDir(async (musicRoot) => {
     await withTempDir(async (tempDir) => {
       const config: PlaylistConfig = {
@@ -562,7 +562,6 @@ test("tracks no longer in the playlist are removed, unavailable and non-mp3 file
         getPlaylistTracks: async () => ({
           tracks: [makeTrack("t1", "Song One")],
           unavailableCount: 1,
-          unavailableTracks: [makeTrack("t3", "Blocked")],
           source: "partner",
         }),
       };
@@ -575,9 +574,9 @@ test("tracks no longer in the playlist are removed, unavailable and non-mp3 file
         pipelineOps: fakePipelineOps(),
       });
 
-      assert.equal(summary.removed, 1);
+      assert.equal(summary.removed, 2);
       const files = (await readdir(playlistDir)).sort();
-      assert.deepEqual(files, ["Artist - Blocked.mp3", "Artist - Song One.mp3", "cover.jpg"]);
+      assert.deepEqual(files, ["Artist - Song One.mp3", "cover.jpg"]);
     });
   });
 });

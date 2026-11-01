@@ -4,7 +4,6 @@ import { runWithSemaphore, type Semaphore } from "../utils/concurrency.js";
 import {
   ensurePlaylistDir,
   computeTrackPaths,
-  computeKeepPaths,
   fileExists,
   removeUnlistedTracks,
 } from "../filesystem/store.js";
@@ -54,14 +53,14 @@ export async function syncPlaylist(
   try {
     const playlistDir = await ensurePlaylistDir(config);
 
-    const { tracks, unavailableCount, unavailableTracks, source } = await deps.spotifyClient.getPlaylistTracks(
+    const { tracks, unavailableCount, source } = await deps.spotifyClient.getPlaylistTracks(
       config.spotifyPlaylistId,
       signal,
     );
     logger.info(
       `Found ${tracks.length} tracks` +
         (unavailableCount > 0
-          ? ` (${unavailableCount} more listed in the playlist are unavailable — local-only or removed from Spotify's catalog — and were skipped)`
+          ? ` (${unavailableCount} more listed in the playlist are unavailable — local-only or removed from Spotify's catalog — and were not downloaded)`
           : ""),
     );
     const listIsComplete = source === "partner" || tracks.length < EMBED_TRACK_LIST_CAP;
@@ -125,7 +124,7 @@ export async function syncPlaylist(
     if (listIsComplete && tracks.length > 0 && !signal?.aborted) {
       const removedFiles = await removeUnlistedTracks(
         playlistDir,
-        computeKeepPaths(config, trackPaths, unavailableTracks ?? []),
+        trackPaths.values(),
       );
       for (const fileName of removedFiles) {
         logger.info(`Removed "${fileName}" (no longer in the Spotify playlist)`);

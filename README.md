@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/propstgonz/Playlist2MP3/actions/workflows/ci.yml/badge.svg)](https://github.com/propstgonz/Playlist2MP3/actions/workflows/ci.yml)
 
-A small background program that keeps a folder on your computer full of MP3s from a Spotify playlist. You give it a playlist link and a folder, and it takes care of everything else: it checks the playlist regularly, downloads whatever songs are missing, and deletes the MP3s of songs you removed from the playlist, so the folder is always an exact copy. Songs that are still in the playlist but no longer playable on Spotify are kept. You don't need a Spotify account, a paid subscription, or any technical knowledge to use it — just follow the steps below.
+A small background program that keeps a folder on your computer full of MP3s from a Spotify playlist. You give it a playlist link and a folder, and it takes care of everything else: it checks the playlist regularly, downloads whatever songs are missing, and deletes the MP3s of songs you removed from the playlist, so the folder is always an exact copy. Songs that are still listed but no longer playable on Spotify are deleted too. You don't need a Spotify account, a paid subscription, or any technical knowledge to use it — just follow the steps below.
 
 ## What you need first
 
@@ -41,18 +41,27 @@ Keep this window open; you'll use it in Step 4.
 1. In the `Playlist2MP3` folder, find the file named `.env.example`.
 2. Copy it (select it, press `Ctrl+C`, then `Ctrl+V`) and rename the copy to `.env` — exactly that, including the dot at the start, with nothing after it.
 3. Right-click `.env` and open it with **Notepad**.
-4. Change two lines:
-   - `MUSIC_HOST_DIR` — the folder where you want your MP3s to be saved. It can be any folder you like, e.g. `C:/Users/YourName/Music/Playlist`. Docker will create it automatically if it doesn't exist yet.
-   - `PLAYLIST_1_URL` — the link to your Spotify playlist. In Spotify, right-click the playlist → **Share** → **Copy link to playlist**, then paste it here.
-5. Optionally change `PLAYLIST_1_NAME` to whatever you want that playlist's folder to be called.
-6. Save the file and close Notepad.
+4. Change `MUSIC_HOST_DIR` — the folder where you want your MP3s to be saved. It can be any folder you like, e.g. `C:/Users/YourName/Music/Playlist`. Docker will create it automatically if it doesn't exist yet.
+5. Save the file and close Notepad.
+6. Copy `config.example.json` and rename the copy to `config.json`. Open it with **Notepad** and list your playlists:
+   ```json
+   {
+     "playlists": [
+       { "name": "Rock", "url": "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M" }
+     ]
+   }
+   ```
+   - `url` — the link to your Spotify playlist. In Spotify, right-click the playlist → **Share** → **Copy link to playlist**, then paste it here.
+   - `name` — whatever you want that playlist's folder to be called.
+   - `dir` — optional, defaults to `/music`. Leave it out unless you know you need it.
+7. Save the file and close Notepad.
 
 - `MAX_SIZE` caps the combined size of all configured playlist directories (including the random one, if enabled). Accepts a plain byte count or a number with a `K`, `M`, `G` or `T` suffix, e.g. `500M` or `1G`. Leave it empty, unset, or `0` for unlimited storage (the default). The check runs once at the start of every sync cycle, before any track is fetched or downloaded; if the limit is already reached, that cycle's downloads are skipped and a clear error is logged, but the service keeps running and retries on the next cycle.
-- `RANDOM_PLAYLIST` (`true`/`false`, default `false`) picks a different public Spotify playlist at random at the start of every sync cycle and syncs it alongside the playlists configured with `PLAYLIST_N_*`, using the same mirror logic. Requires `RANDOM_PLAYLIST_DIR`. If no random playlist can be found in a given cycle, a warning is logged and the rest of the cycle proceeds normally.
+- `RANDOM_PLAYLIST` (`true`/`false`, default `false`) picks a different public Spotify playlist at random at the start of every sync cycle and syncs it alongside the playlists in `config.json`, using the same mirror logic. Requires `RANDOM_PLAYLIST_DIR`. If no random playlist can be found in a given cycle, a warning is logged and the rest of the cycle proceeds normally.
 - `SPOTIFY_FULL_CATALOG` (`true`/`false`, default `true`) controls the metadata source. Left on, playlists are read page by page with no track limit. Set it to `false` to force the embed fallback, which stops at 100 tracks per playlist. `SPOTIFY_PAGE_DELAY_MS` (default `250`) is the pause between pages — raise it if Spotify starts throttling. `SPOTIFY_PARTNER_HASH` is an optional 64-character override for the query identifier; leave it empty and the service detects the current one by itself.
-- `RANDOM_PLAYLIST_DIR` is the root directory the randomly picked playlist is written under (same convention as `PLAYLIST_N_DIR`: a subfolder named after the picked playlist is created inside it). Required only when `RANDOM_PLAYLIST=true`.
+- `RANDOM_PLAYLIST_DIR` is the root directory the randomly picked playlist is written under (same convention as a playlist's `dir`: a subfolder named after the picked playlist is created inside it). Required only when `RANDOM_PLAYLIST=true`.
 
-`MUSIC_HOST_DIR` is the real path on your machine that Docker Compose mounts into the container at the fixed path `/music` (see `docker-compose.yml`). Every `PLAYLIST_N_DIR` should point at `/music` — that's the container-side path, not `MUSIC_HOST_DIR` itself.
+`MUSIC_HOST_DIR` is the real path on your machine that Docker Compose mounts into the container at the fixed path `/music` (see `docker-compose.yml`). Every playlist `dir` in `config.json` should point at `/music` (the default) — that's the container-side path, not `MUSIC_HOST_DIR` itself.
 Your playlist must be **public** in Spotify (not private) for this to work, since there's no login step involved.
 
 ## Step 4 — Start it
@@ -69,31 +78,34 @@ The first time, this takes a few minutes while it prepares everything. After tha
 
 Open the folder you set as `MUSIC_HOST_DIR`. You should see a new subfolder named after your playlist, and inside it, MP3 files appearing one by one.
 
-From now on, it keeps running quietly in the background and checks your playlist once a day for new songs, downloading only what's new — you don't need to do anything else.
+From now on, it keeps running quietly in the background and checks your playlist once a day and keeps the folder an exact copy of it: new songs are downloaded, and songs removed from the playlist (or no longer playable on Spotify) are deleted — you don't need to do anything else.
 
 ## Everyday use
 
 - **Stop it:** `docker compose down`
 - **Start it again:** `docker compose up -d`
-- **Add more playlists:** open `.env` in Notepad again and add a new block, changing the number each time:
-  ```env
-  PLAYLIST_2_NAME=Electronic
-  PLAYLIST_2_URL=https://open.spotify.com/playlist/37i9dQZF1DX4dyzvuaRJ0n
-  PLAYLIST_2_DIR=/music
+- **Add more playlists:** open `config.json` in Notepad and add another entry to the list, separated by a comma:
+  ```json
+  {
+    "playlists": [
+      { "name": "Rock", "url": "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M" },
+      { "name": "Electronic", "url": "https://open.spotify.com/playlist/37i9dQZF1DX4dyzvuaRJ0n" }
+    ]
+  }
   ```
-  Then run `docker compose up -d` again to apply the change.
+  Then run `docker compose up -d --force-recreate` to apply the change.
 - **Change how often it checks:** edit `SYNC_INTERVAL` in `.env` (in seconds — `86400` is once a day, `3600` is once an hour).
 
 ## Good to know
 
 - Playlist metadata comes from Spotify's own public web endpoints (no login, no developer app), read page by page. Playlists of any size are synced in full. If that source is unreachable, the service falls back to Spotify's embed pages, which only expose the first 100 tracks; the logs warn whenever a playlist is truncated that way, and no files are deleted while the list may be incomplete.
 - `RANDOM_PLAYLIST` requires searching across all of Spotify's public playlists, which the embed pages can't do. It logs a warning each cycle and is skipped until this project adds an alternative discovery source.
-- Spotify sometimes removes a track after it's been added to a playlist. The service notices and skips those automatically, and says so in its logs.
+- Spotify sometimes removes a track after it's been added to a playlist. The service notices, says so in its logs, and deletes its MP3 so the folder matches what Spotify can play. Any other files you put in a playlist folder (non-MP3) are never touched.
 - This relies on how Spotify's public playlist pages happen to be built today. If Spotify changes that, it could stop working until this project is updated to match.
 
 ## For developers
 
-Everything above is controlled through `.env`; `docker-compose.yml` itself never needs editing.
+Playlists live in `config.json` (path overridable with `CONFIG_FILE`); everything else is controlled through `.env`; `docker-compose.yml` itself never needs editing.
 
 | Variable | Meaning |
 |---|---|
@@ -108,7 +120,7 @@ Everything above is controlled through `.env`; `docker-compose.yml` itself never
 | `MAX_SIZE` | Optional quota for total bytes in configured playlist directories. |
 | `RANDOM_PLAYLIST` | Enable syncing one random public playlist per cycle. |
 | `RANDOM_PLAYLIST_DIR` | Root dir used when `RANDOM_PLAYLIST=true`. |
-| `PLAYLIST_N_NAME` / `_URL` / `_DIR` | One playlist per number; `_DIR` should always be `/music`. |
+| `CONFIG_FILE` | Path to the playlists JSON file (default `config.json`, i.e. `/app/config.json` in the container). |
 
 Features:
 
