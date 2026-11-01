@@ -2,167 +2,167 @@
 
 [![CI](https://github.com/propstgonz/Playlist2MP3/actions/workflows/ci.yml/badge.svg)](https://github.com/propstgonz/Playlist2MP3/actions/workflows/ci.yml)
 
-A small background program that keeps a folder on your computer full of MP3s from a Spotify playlist. You give it a playlist link and a folder, and it takes care of everything else: it checks the playlist regularly, downloads whatever songs are missing, and deletes the MP3s of songs you removed from the playlist, so the folder is always an exact copy. Songs that are still listed but no longer playable on Spotify are deleted too. You don't need a Spotify account, a paid subscription, or any technical knowledge to use it — just follow the steps below.
+A small background program that keeps folders on your computer full of MP3s from your Spotify playlists. You give it playlist links, and it takes care of everything else: it checks Spotify regularly, downloads the songs that are missing, and (if you want) deletes the ones you removed from the playlist, so each folder is an exact copy.
+
+It works hard to download **the same version you hear on Spotify**: it looks on YouTube Music first, checks the duration, artist and title, and refuses live versions, covers, remixes, karaoke, sped-up edits and similar unless the Spotify track itself is one of those.
+
+You don't need a Spotify account, a paid subscription, or any technical knowledge — just follow the steps below.
 
 ## What you need first
 
-- **A Windows, Mac, or Linux computer.** These instructions use Windows, but the same steps work everywhere — only how you open a terminal changes.
-- **Docker Desktop.** This is the only program you need to install. It lets your computer run this project in a safe, self-contained "box" (called a *container*) without installing anything else by hand.
-  1. Go to [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/) and download it.
-  2. Run the installer, keeping all the default options.
-  3. Once it's done, open Docker Desktop and wait until it says it's running (you'll see a whale icon appear near your clock, in the taskbar).
+- **A Windows, Mac, or Linux computer** (or a home server). These instructions use Windows; only how you open a terminal changes elsewhere.
+- **Docker Desktop.** The only program you need to install. It runs this project in a self-contained "box" (a *container*).
+  1. Download it from [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/).
+  2. Run the installer with the default options.
+  3. Open Docker Desktop and wait until it says it's running (a whale icon appears near your clock).
 
-That's the only software to install. Everything else (the downloader, the audio converter) is already bundled inside the project.
+Everything else (the downloader, the audio converter) is already bundled inside the project.
 
-## Step 1 — Get the project onto your computer
+## Step 1 — Get the project
 
-Go to the project's page on GitHub and choose one of these:
+On the project's GitHub page, either:
 
-- **Easiest — no extra software:** click the green **Code** button, then **Download ZIP**. Once downloaded, right-click the ZIP file and choose **Extract All...**, and pick a folder you'll remember (e.g. your Desktop).
-- **If you already use Git:** open a terminal anywhere and run:
-  ```bash
-  git clone https://github.com/propstgonz/Playlist2MP3.git
-  ```
+- click the green **Code** button → **Download ZIP**, then right-click the ZIP → **Extract All...**, or
+- if you use Git: `git clone https://github.com/propstgonz/Playlist2MP3.git`
 
-Either way, you'll end up with a folder named `Playlist2MP3` containing all the project's files.
+You'll end up with a folder named `Playlist2MP3`.
 
 ## Step 2 — Open a terminal inside that folder
 
-A terminal is just a window where you type commands instead of clicking.
-
 1. Open the `Playlist2MP3` folder in File Explorer.
-2. Click once on the address bar at the top of the window (where the folder path is shown), so it becomes editable.
-3. Type `cmd` and press **Enter**. A black window will open — that's your terminal, already pointed at the right folder.
+2. Click the address bar at the top, type `cmd` and press **Enter**. A black window opens, already in the right folder. Keep it open.
 
-Keep this window open; you'll use it in Step 4.
+## Step 3 — Tell it where to save the music (`.env`)
 
-## Step 3 — Create and fill in your settings file
+1. Copy `.env.example` and rename the copy to `.env` (with the dot, nothing after it).
+2. Open `.env` with **Notepad** and change `MUSIC_HOST_DIR` to the folder where you want your MP3s, e.g. `C:/Users/YourName/Music/Playlist`. Docker creates it if it doesn't exist.
+3. Save and close.
 
-1. In the `Playlist2MP3` folder, find the file named `.env.example`.
-2. Copy it (select it, press `Ctrl+C`, then `Ctrl+V`) and rename the copy to `.env` — exactly that, including the dot at the start, with nothing after it.
-3. Right-click `.env` and open it with **Notepad**.
-4. Change `MUSIC_HOST_DIR` — the folder where you want your MP3s to be saved. It can be any folder you like, e.g. `C:/Users/YourName/Music/Playlist`. Docker will create it automatically if it doesn't exist yet.
-5. Save the file and close Notepad.
-6. Copy `config.example.json` and rename the copy to `config.json`. Open it with **Notepad** and list your playlists:
+That is the only setting in `.env`. Inside the container that folder is always called `/music` — that's an internal path of the container, not a folder on your computer, and you never need to type it anywhere.
+
+## Step 4 — Choose your playlists (`config/config.json`)
+
+1. Open the `config` folder, copy `config.example.json` and rename the copy to `config.json`.
+2. Open `config.json` with **Notepad**. The only part you really need is the list of playlists:
    ```json
    {
      "playlists": [
-       { "name": "Rock", "url": "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M" }
+       { "name": "Rock", "url": "https://open.spotify.com/playlist/37i9dQZF1DWXRqgorJj26U" }
      ]
    }
    ```
-   - `url` — the link to your Spotify playlist. In Spotify, right-click the playlist → **Share** → **Copy link to playlist**, then paste it here.
-   - `name` — whatever you want that playlist's folder to be called.
-   - `dir` — optional, defaults to `/music`. Leave it out unless you know you need it.
-7. Save the file and close Notepad.
+   - `url` — in Spotify, right-click the playlist → **Share** → **Copy link to playlist**, and paste it here. The playlist must be **public**.
+   - `name` — the name of the folder where its MP3s go.
+3. Save and close.
 
-- `MAX_SIZE` caps the combined size of all configured playlist directories (including the random one, if enabled). Accepts a plain byte count or a number with a `K`, `M`, `G` or `T` suffix, e.g. `500M` or `1G`. Leave it empty, unset, or `0` for unlimited storage (the default). The check runs once at the start of every sync cycle, before any track is fetched or downloaded; if the limit is already reached, that cycle's downloads are skipped and a clear error is logged, but the service keeps running and retries on the next cycle.
-- `RANDOM_PLAYLIST` (`true`/`false`, default `false`) picks a different public Spotify playlist at random at the start of every sync cycle and syncs it alongside the playlists in `config.json`, using the same mirror logic. Requires `RANDOM_PLAYLIST_DIR`. If no random playlist can be found in a given cycle, a warning is logged and the rest of the cycle proceeds normally.
-- `SPOTIFY_FULL_CATALOG` (`true`/`false`, default `true`) controls the metadata source. Left on, playlists are read page by page with no track limit. Set it to `false` to force the embed fallback, which stops at 100 tracks per playlist. `SPOTIFY_PAGE_DELAY_MS` (default `250`) is the pause between pages — raise it if Spotify starts throttling. `SPOTIFY_PARTNER_HASH` is an optional 64-character override for the query identifier; leave it empty and the service detects the current one by itself.
-- `RANDOM_PLAYLIST_DIR` is the root directory the randomly picked playlist is written under (same convention as a playlist's `dir`: a subfolder named after the picked playlist is created inside it). Required only when `RANDOM_PLAYLIST=true`.
+**Tip:** for your very first run, set `"dryRun": true`. The program then only *tells you* in the log what it would download, rename or delete, without touching anything. When it looks right, set it back to `false`.
 
-`MUSIC_HOST_DIR` is the real path on your machine that Docker Compose mounts into the container at the fixed path `/music` (see `docker-compose.yml`). Every playlist `dir` in `config.json` should point at `/music` (the default) — that's the container-side path, not `MUSIC_HOST_DIR` itself.
-Your playlist must be **public** in Spotify (not private) for this to work, since there's no login step involved.
+## Step 5 — Start it
 
-## Step 4 — Start it
-
-Back in the terminal window from Step 2, type this and press **Enter**:
+In the terminal from Step 2:
 
 ```bash
 docker compose up -d --build
 ```
 
-The first time, this takes a few minutes while it prepares everything. After that, it starts working right away: it reads your playlist and begins downloading the songs.
+The first time takes a few minutes. Then it starts right away: it reads your playlists and begins downloading. To watch what it's doing:
 
-## Step 5 — Check that it worked
+```bash
+docker compose logs -f
+```
 
-Open the folder you set as `MUSIC_HOST_DIR`. You should see a new subfolder named after your playlist, and inside it, MP3 files appearing one by one.
-
-From now on, it keeps running quietly in the background and checks your playlist once a day and keeps the folder an exact copy of it: new songs are downloaded, and songs removed from the playlist (or no longer playable on Spotify) are deleted — you don't need to do anything else.
+Open the folder you set as `MUSIC_HOST_DIR`: you'll see one subfolder per playlist, with the MP3s and a `.m3u` file that opens the playlist in Spotify's order in any music player.
 
 ## Everyday use
 
-- **Stop it:** `docker compose down`
-- **Start it again:** `docker compose up -d`
-- **Add more playlists:** open `config.json` in Notepad and add another entry to the list, separated by a comma:
-  ```json
-  {
-    "playlists": [
-      { "name": "Rock", "url": "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M" },
-      { "name": "Electronic", "url": "https://open.spotify.com/playlist/37i9dQZF1DX4dyzvuaRJ0n" }
-    ]
-  }
-  ```
-  Then run `docker compose up -d --force-recreate` to apply the change.
-- **Change how often it checks:** edit `SYNC_INTERVAL` in `.env` (in seconds — `86400` is once a day, `3600` is once an hour).
+- **Add or remove a playlist:** edit `config/config.json`. There's no need to restart: the file is read again at the start of every check. If you made a mistake in the file, the log tells you exactly where, and the previous settings keep working.
+- **Apply a change right now** instead of waiting for the next check: `docker compose restart`
+- **Stop it:** `docker compose down` — **start it again:** `docker compose up -d`
+- **See what it's doing in detail:** set `"logLevel": "debug"`. For every song you'll see which YouTube results were considered, their score, and why each one was accepted or rejected.
+
+## All the options
+
+Everything is optional except `playlists`. Values shown are the defaults.
+
+```json
+{
+  "syncInterval": "24h",
+  "concurrency": 2,
+  "logLevel": "info",
+  "timezone": "Europe/Madrid",
+  "dryRun": false,
+  "defaults": { "mode": "mirror", "fileName": "{artists} - {title}" },
+  "audio": { "quality": "best" },
+  "matching": { "strict": true, "durationToleranceSec": 7, "youtubeFallback": true },
+  "random": { "enabled": false, "name": "Aleatoria", "maxTracks": 50, "mode": "mirror" },
+  "playlists": [
+    { "name": "Rock", "url": "https://open.spotify.com/playlist/...", "mode": "incremental" }
+  ]
+}
+```
+
+| Option | What it does |
+|---|---|
+| `syncInterval` | How often it checks Spotify: `30m`, `6h`, `1d`... (between `1m` and `20d`). |
+| `concurrency` | How many songs are downloaded at the same time, across all playlists (1–16). |
+| `logLevel` | `debug` shows every detail; `info`, `warn`, `error` show less. |
+| `timezone` | Time zone for the log timestamps, e.g. `Europe/Madrid`. Default: UTC. |
+| `dryRun` | `true`: only report what would happen, change nothing. |
+| `defaults.mode` | `mirror`: exact copy — adds new songs **and deletes** the ones no longer in the playlist (or no longer playable on Spotify). `incremental`: only adds, never deletes. |
+| `defaults.fileName` | File name pattern. Placeholders: `{artists}`, `{artist}` (first one), `{title}`, `{album}`, `{year}`. Must contain `{title}`. Changing it renames existing files, it doesn't download them again. |
+| `audio.quality` | `best` (VBR V0, the highest MP3 quality) or a fixed bitrate: `320k`, `256k`, `192k`, `160k`, `128k`, `96k`, `64k`. |
+| `matching.strict` | `true`: if no faithful version is found, the song is skipped and the log explains why (it's retried on the next check). `false`: the closest result is downloaded anyway and flagged as a doubtful match. |
+| `matching.durationToleranceSec` | Maximum difference in seconds from the Spotify duration (1–60). |
+| `matching.youtubeFallback` | Also search regular YouTube when YouTube Music has no faithful match. |
+| `random.enabled` | Every check, pick a random public Spotify playlist and save it in its own folder. |
+| `random.name` | Folder name for the random playlist. |
+| `random.maxTracks` | Maximum songs taken from each random playlist (1–1000). |
+| `random.mode` | `mirror` replaces the folder with each new random playlist; `incremental` keeps adding to it. |
+| `playlists[].mode` | Overrides `defaults.mode` for one playlist. |
 
 ## Good to know
 
-- Playlist metadata comes from Spotify's own public web endpoints (no login, no developer app), read page by page. Playlists of any size are synced in full. If that source is unreachable, the service falls back to Spotify's embed pages, which only expose the first 100 tracks; the logs warn whenever a playlist is truncated that way, and no files are deleted while the list may be incomplete.
-- `RANDOM_PLAYLIST` requires searching across all of Spotify's public playlists, which the embed pages can't do. It logs a warning each cycle and is skipped until this project adds an alternative discovery source.
-- Spotify sometimes removes a track after it's been added to a playlist. The service notices, says so in its logs, and deletes its MP3 so the folder matches what Spotify can play. Any other files you put in a playlist folder (non-MP3) are never touched.
-- This relies on how Spotify's public playlist pages happen to be built today. If Spotify changes that, it could stop working until this project is updated to match.
+- **Your own files are safe.** In each playlist folder there's a hidden index file (`.playlist2mp3.json`) listing the MP3s the program downloaded. Only those can ever be deleted; an MP3 you put there yourself, or any non-MP3 file, is never touched. Don't delete the index file unless you want the program to forget which files it owns.
+- **Upgrading from an older version:** the first time it runs on an existing folder, MP3s whose name matches a song in the playlist are adopted into the index instead of being downloaded again.
+- **Nothing is deleted when in doubt.** If Spotify only returns a partial list (its fallback source stops at 100 songs) or an empty one, no files are removed that cycle.
+- **Restart-safe.** A song only counts as done once the finished MP3 is in place. If the container stops halfway, the next run picks up exactly where it left off.
+- Songs that Spotify marks as unavailable (removed from its catalog or local files) can't be downloaded; the log says how many there are.
+- This relies on how Spotify's and YouTube's public pages work today. If they change, it may stop working until the project is updated. To update the YouTube downloader, change `YTDLP_VERSION` in the `Dockerfile` and run `docker compose up -d --build`.
 
 ## For developers
-
-Playlists live in `config.json` (path overridable with `CONFIG_FILE`); everything else is controlled through `.env`; `docker-compose.yml` itself never needs editing.
-
-| Variable | Meaning |
-|---|---|
-| `MUSIC_HOST_DIR` | Real folder on your machine, mounted into the container. |
-| `SYNC_INTERVAL` | Seconds between sync cycles. |
-| `DOWNLOAD_CONCURRENCY` | Max tracks downloaded at once. |
-| `TEMP_DIR` | Working directory for temp files during conversion. |
-| `LOG_LEVEL` | `debug`, `info`, `warn` or `error`. |
-| `SPOTIFY_FULL_CATALOG` | `true` (default) reads playlists page by page with no track limit; `false` forces the 100-track embed fallback. |
-| `SPOTIFY_PAGE_DELAY_MS` | Pause between pages of 100 tracks (default `250`). |
-| `SPOTIFY_PARTNER_HASH` | Optional 64-char query hash override; empty means auto-detect. |
-| `MAX_SIZE` | Optional quota for total bytes in configured playlist directories. |
-| `RANDOM_PLAYLIST` | Enable syncing one random public playlist per cycle. |
-| `RANDOM_PLAYLIST_DIR` | Root dir used when `RANDOM_PLAYLIST=true`. |
-| `CONFIG_FILE` | Path to the playlists JSON file (default `config.json`, i.e. `/app/config.json` in the container). |
-
-Features:
-
-- Multiple playlists at once, each in its own folder.
-- Only downloads what's missing — safe to stop and restart anytime.
-- Playlist metadata via Spotify's public web endpoints, with no cap on playlist size.
-- Optional random public playlist sync each cycle (currently unavailable; see "Good to know" above).
-- Optional storage quota checks before downloads.
-- Keeps original track/artist names (only filesystem-illegal characters get replaced).
-- Tags every MP3 (title, artist, track number, year, cover art) from Spotify's own metadata.
-- One playlist failing never stops the others.
-- No Spotify account, developer app, or subscription: metadata comes from the same public endpoints Spotify's own web player uses, reached with the anonymous token its embed pages already hand out.
-
-Local development:
 
 ```bash
 npm install
 npm run typecheck
-npm test
-npm run dev   # requires yt-dlp and ffmpeg on PATH
-
-npm run check:spotify -- https://open.spotify.com/playlist/<id>
+npm test                 # fully offline: no network calls, no real downloads
+npm run dev              # needs yt-dlp, ffmpeg and node on PATH; see env vars below
+npm run check:match -- "Queen - Bohemian Rhapsody 5:54"
+npm run check:match -- https://open.spotify.com/playlist/<id> 20
 ```
 
-`check:spotify` hits Spotify for real and reports which metadata source answered, how many tracks came back, and how much of the tagging metadata was filled in. Use it to confirm the full-catalog source still works.
+`check:match` searches for real (no download) and prints every candidate with its score and rejection reasons, so you can verify which version would be picked for a song or for the first N songs of a playlist.
 
-Tests run fully offline — no network calls, no real downloads.
+Paths inside the container are fixed; for local runs they can be overridden with `CONFIG_FILE` (default `/config/config.json`), `MUSIC_DIR` (default `/music`) and `TEMP_DIR` (default `/tmp/playlist2mp3`).
+
+How a cycle works:
+
+1. Read and validate `config/config.json` (keep the previous config if the new one is invalid).
+2. For every playlist, in parallel: fetch the full track list from Spotify, load the folder index, build a plan (download / rename / keep / remove), apply it, download the missing songs through a global concurrency limit, and write the `.m3u`.
+3. Log a summary, wait `syncInterval`, repeat.
 
 Project layout:
 
-- `src/index.ts` — main process and lifecycle.
-- `src/config/` — environment parsing and validation.
-- `src/playlist/` — Spotify metadata client (anonymous token, paginated full-catalog source, embed fallback).
-- `src/sync/` — per-playlist and per-cycle synchronization orchestration.
-- `src/resolver/` — matches Spotify tracks to a downloadable source via `yt-dlp` search.
-- `src/downloader/` — download execution and the per-track pipeline state machine.
-- `src/audio/` — MP3 conversion and ID3 tagging.
-- `src/filesystem/` — path sanitization, path resolution, and all disk I/O.
-- `src/types/` — shared type definitions.
-- `src/utils/` — logging, retry, and concurrency helpers.
+- `src/index.ts` — main loop, config reload, shutdown.
+- `src/config/` — `config.json` validation and defaults.
+- `src/playlist/` — anonymous Spotify client: full playlist pages, embed fallback, random playlist search, query hash discovery.
+- `src/resolver/` — YouTube Music / YouTube search via `yt-dlp` and the matching rules (`match.ts`).
+- `src/downloader/` — `yt-dlp` audio download to MP3 and the per-song pipeline.
+- `src/audio/` — ID3 tags and cover art.
+- `src/filesystem/` — safe names, folder index, atomic file operations.
+- `src/sync/` — the plan (pure logic), per-playlist execution and the cycle.
+- `src/types/`, `src/utils/` — shared types, logger, retry, concurrency, durations.
 - `tests/` — unit and integration tests.
 
 ## Disclaimer
 
-For personal, offline backups of playlists you already have legitimate access to. Not affiliated with, endorsed by, or supported by Spotify. You're responsible for complying with Spotify's Terms of Service and the copyright law in your jurisdiction when using this tool.
+For personal, offline backups of playlists you already have legitimate access to. Not affiliated with, endorsed by, or supported by Spotify or YouTube. You're responsible for complying with their Terms of Service and with the copyright law in your jurisdiction.
