@@ -3,8 +3,6 @@ services:
     build: .
     container_name: playlist2mp3
     restart: unless-stopped
-    env_file:
-      - .env
     volumes:
-      - ${MUSIC_HOST_DIR}:/music
-      - ./config.json:/app/config.json:ro
+      - ${MUSIC_HOST_DIR:?Set MUSIC_HOST_DIR in .env}:/music
+      - ./config:/config:ro

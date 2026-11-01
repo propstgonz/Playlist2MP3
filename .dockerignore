@@ -9,3 +9,5 @@ CLAUDE.md
 .github
 docker-compose.dev.yml
 README.md
+config
+scripts

@@ -3,4 +3,4 @@ node_modules/
 dist/
 .env
 *.log
-config.json
+config/config.json

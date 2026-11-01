@@ -12,8 +12,10 @@ RUN npm run build
 
 FROM node:22-alpine AS runtime
 
+ARG YTDLP_VERSION=2026.08.19
+
 RUN apk add --no-cache ffmpeg python3 py3-pip \
-    && pip install --no-cache-dir --break-system-packages yt-dlp==2026.08.19 \
+    && pip install --no-cache-dir --break-system-packages "yt-dlp[default]==${YTDLP_VERSION}" \
     && apk del py3-pip
 
 WORKDIR /app
@@ -24,7 +26,7 @@ RUN npm ci --omit=dev
 
 COPY --from=builder /app/dist ./dist
 
-RUN mkdir -p /tmp/playlist2mp3 && chown -R node:node /tmp/playlist2mp3 /app
+RUN mkdir -p /tmp/playlist2mp3 /config /music && chown -R node:node /tmp/playlist2mp3 /app
 
 USER node
 
