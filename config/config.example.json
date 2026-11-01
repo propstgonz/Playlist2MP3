@@ -1,0 +1,41 @@
+{
+  "syncInterval": "24h",
+  "concurrency": 2,
+  "logLevel": "info",
+  "timezone": "Europe/Madrid",
+  "dryRun": false,
+
+  "defaults": {
+    "mode": "mirror",
+    "fileName": "{artists} - {title}"
+  },
+
+  "audio": {
+    "quality": "best"
+  },
+
+  "matching": {
+    "strict": true,
+    "durationToleranceSec": 7,
+    "youtubeFallback": true
+  },
+
+  "random": {
+    "enabled": false,
+    "name": "Aleatoria",
+    "maxTracks": 50,
+    "mode": "mirror"
+  },
+
+  "playlists": [
+    {
+      "name": "Rock Classics",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DWXRqgorJj26U"
+    },
+    {
+      "name": "Electronic",
+      "url": "https://open.spotify.com/playlist/37i9dQZF1DX4dyzvuaRJ0n",
+      "mode": "incremental"
+    }
+  ]
+}

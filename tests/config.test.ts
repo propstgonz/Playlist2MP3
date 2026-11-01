@@ -1,124 +1,147 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadConfig, ConfigError } from "../src/config/index.js";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ConfigError, extractPlaylistId, parseConfig } from "../src/config/schema.js";
+import { loadConfig } from "../src/config/load.js";
+import { parseDuration } from "../src/utils/duration.js";
 
-const FILE_CONFIG = {
-  playlists: [{ name: "Rock", url: "https://open.spotify.com/playlist/1111111111111111111111" }],
-};
+const URL_A = "https://open.spotify.com/playlist/1111111111111111111111";
+const URL_B = "https://open.spotify.com/playlist/2222222222222222222222?si=abc";
 
-function baseEnv(): NodeJS.ProcessEnv {
-  return {};
+function minimal(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { playlists: [{ name: "Rock", url: URL_A }], ...extra };
 }
 
-test("loads defaults when optional variables are absent", () => {
-  const config = loadConfig(baseEnv(), FILE_CONFIG);
-  assert.equal(config.syncIntervalSec, 86400);
-  assert.equal(config.downloadConcurrency, 2);
-  assert.equal(config.tempDir, "/tmp/playlist2mp3");
-  assert.equal(config.playlists.length, 1);
-  assert.equal(config.maxSizeBytes, 0);
-  assert.equal(config.randomPlaylist, undefined);
-});
-
-test("treats an absent, empty or zero MAX_SIZE as unlimited storage", () => {
-  assert.equal(loadConfig(baseEnv(), FILE_CONFIG).maxSizeBytes, 0);
-  assert.equal(loadConfig({ ...baseEnv(), MAX_SIZE: "" }, FILE_CONFIG).maxSizeBytes, 0);
-  assert.equal(loadConfig({ ...baseEnv(), MAX_SIZE: "0" }, FILE_CONFIG).maxSizeBytes, 0);
-});
-
-test("parses MAX_SIZE suffixes into bytes", () => {
-  assert.equal(loadConfig({ ...baseEnv(), MAX_SIZE: "500M" }, FILE_CONFIG).maxSizeBytes, 500 * 1024 ** 2);
-  assert.equal(loadConfig({ ...baseEnv(), MAX_SIZE: "1G" }, FILE_CONFIG).maxSizeBytes, 1024 ** 3);
-  assert.equal(loadConfig({ ...baseEnv(), MAX_SIZE: "2048" }, FILE_CONFIG).maxSizeBytes, 2048);
-});
-
-test("rejects a malformed MAX_SIZE", () => {
+function rejects(raw: unknown, fragment: string): void {
   assert.throws(
-    () => loadConfig({ ...baseEnv(), MAX_SIZE: "not-a-size" }, FILE_CONFIG),
-    (error: unknown) => error instanceof ConfigError && error.message.includes("MAX_SIZE"),
+    () => parseConfig(raw),
+    (error: unknown) => error instanceof ConfigError && error.message.includes(fragment),
   );
+}
+
+test("only playlists are required and everything else has a default", () => {
+  const config = parseConfig(minimal());
+  assert.equal(config.syncIntervalMs, 86_400_000);
+  assert.equal(config.concurrency, 2);
+  assert.equal(config.logLevel, "info");
+  assert.equal(config.dryRun, false);
+  assert.equal(config.fileName, "{artists} - {title}");
+  assert.equal(config.audioQuality, "best");
+  assert.deepEqual(config.matching, { strict: true, durationToleranceSec: 7, youtubeFallback: true });
+  assert.equal(config.random.enabled, false);
+  assert.deepEqual(config.playlists, [
+    { name: "Rock", url: URL_A, playlistId: "1111111111111111111111", mode: "mirror" },
+  ]);
 });
 
-test("enables the random playlist feature only when RANDOM_PLAYLIST is truthy", () => {
-  assert.equal(loadConfig({ ...baseEnv(), RANDOM_PLAYLIST: "false" }, FILE_CONFIG).randomPlaylist, undefined);
-  const config = loadConfig({
-    ...baseEnv(),
-    RANDOM_PLAYLIST: "true",
-    RANDOM_PLAYLIST_DIR: "/music/random",
-  }, FILE_CONFIG);
-  assert.deepEqual(config.randomPlaylist, { dir: "/music/random" });
+test("a playlist mode overrides the default mode", () => {
+  const config = parseConfig({
+    defaults: { mode: "incremental" },
+    playlists: [
+      { name: "A", url: URL_A },
+      { name: "B", url: URL_B, mode: "mirror" },
+    ],
+  });
+  assert.equal(config.playlists[0]?.mode, "incremental");
+  assert.equal(config.playlists[1]?.mode, "mirror");
+  assert.equal(config.playlists[1]?.playlistId, "2222222222222222222222");
 });
 
-test("requires RANDOM_PLAYLIST_DIR when RANDOM_PLAYLIST is enabled", () => {
-  assert.throws(
-    () => loadConfig({ ...baseEnv(), RANDOM_PLAYLIST: "true" }, FILE_CONFIG),
-    (error: unknown) =>
-      error instanceof ConfigError && error.message.includes("RANDOM_PLAYLIST_DIR"),
+test("parses every documented option", () => {
+  const config = parseConfig(
+    minimal({
+      syncInterval: "6h",
+      concurrency: 4,
+      logLevel: "debug",
+      timezone: "Europe/Madrid",
+      dryRun: true,
+      defaults: { mode: "incremental", fileName: "{artist} - {title} ({year})" },
+      audio: { quality: "320k" },
+      matching: { strict: false, durationToleranceSec: 10, youtubeFallback: false },
+      random: { enabled: true, name: "Sorpresa", maxTracks: 20, mode: "mirror" },
+    }),
   );
+  assert.equal(config.syncIntervalMs, 6 * 3_600_000);
+  assert.equal(config.concurrency, 4);
+  assert.equal(config.logLevel, "debug");
+  assert.equal(config.timezone, "Europe/Madrid");
+  assert.equal(config.dryRun, true);
+  assert.equal(config.fileName, "{artist} - {title} ({year})");
+  assert.equal(config.audioQuality, "320k");
+  assert.deepEqual(config.matching, { strict: false, durationToleranceSec: 10, youtubeFallback: false });
+  assert.deepEqual(config.random, { enabled: true, name: "Sorpresa", maxTracks: 20, mode: "mirror" });
+  assert.equal(config.playlists[0]?.mode, "incremental");
 });
 
-test("applies explicit SYNC_INTERVAL, DOWNLOAD_CONCURRENCY and TEMP_DIR", () => {
-  const config = loadConfig({
-    ...baseEnv(),
-    SYNC_INTERVAL: "3600",
-    DOWNLOAD_CONCURRENCY: "5",
-    TEMP_DIR: "/custom/temp",
-  }, FILE_CONFIG);
-  assert.equal(config.syncIntervalSec, 3600);
-  assert.equal(config.downloadConcurrency, 5);
-  assert.equal(config.tempDir, "/custom/temp");
+test("errors name the exact option that is wrong", () => {
+  rejects(minimal({ concurrency: 0 }), '"concurrency"');
+  rejects(minimal({ syncInterval: "10" }), '"syncInterval"');
+  rejects(minimal({ syncInterval: "30s" }), '"syncInterval"');
+  rejects(minimal({ logLevel: "verbose" }), '"logLevel"');
+  rejects(minimal({ timezone: "Mars/Olympus" }), '"timezone"');
+  rejects(minimal({ audio: { quality: "999k" } }), '"audio.quality"');
+  rejects(minimal({ defaults: { fileName: "{artists}" } }), "{title}");
+  rejects(minimal({ defaults: { fileName: "{title} {genre}" } }), "{genre}");
+  rejects({ playlists: [{ name: "A", url: URL_A, mode: "copy" }] }, '"playlists[0].mode"');
+  rejects({ playlists: [{ name: "A" }] }, '"playlists[0]" needs both');
+  rejects({ playlists: [{ name: "A", url: "https://example.com/x" }] }, '"playlists[0].url"');
+  rejects({ playlists: "Rock" }, '"playlists" must be a list');
 });
 
-test("rejects a non-integer SYNC_INTERVAL", () => {
-  assert.throws(
-    () => loadConfig({ ...baseEnv(), SYNC_INTERVAL: "not-a-number" }, FILE_CONFIG),
-    (error: unknown) => error instanceof ConfigError && error.message.includes("SYNC_INTERVAL"),
-  );
+test("unknown options are reported instead of silently ignored", () => {
+  rejects(minimal({ concurency: 2 }), 'Unknown option "concurency"');
+  rejects(minimal({ matching: { strcit: true } }), 'Unknown option "matching.strcit"');
+  rejects({ playlists: [{ name: "A", url: URL_A, dir: "/music" }] }, 'Unknown option "playlists[0].dir"');
 });
 
-test("rejects a zero or negative DOWNLOAD_CONCURRENCY", () => {
-  assert.throws(
-    () => loadConfig({ ...baseEnv(), DOWNLOAD_CONCURRENCY: "0" }, FILE_CONFIG),
-    (error: unknown) =>
-      error instanceof ConfigError && error.message.includes("DOWNLOAD_CONCURRENCY"),
-  );
+test("requires at least one playlist unless the random playlist is enabled", () => {
+  rejects({ playlists: [] }, "No playlists configured");
+  rejects({}, "No playlists configured");
+  assert.equal(parseConfig({ random: { enabled: true } }).playlists.length, 0);
 });
 
-test("surfaces the underlying playlist configuration error", () => {
-  assert.throws(() => loadConfig({}, { playlists: [{ name: "Rock", url: "https://example.com/not-spotify" }] }), ConfigError);
+test("rejects two playlists that would share a folder", () => {
+  rejects({ playlists: [{ name: "Rock", url: URL_A }, { name: "rock", url: URL_B }] }, "same folder");
+  rejects({ playlists: [{ name: "Aleatoria", url: URL_A }], random: { enabled: true } }, "same folder");
 });
 
-test("requires at least one playlist to be configured", () => {
-  assert.throws(() => loadConfig({}, { playlists: [] }), ConfigError);
+test("accepts Spotify playlist links in their common shapes", () => {
+  assert.equal(extractPlaylistId("https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=x"), "37i9dQZF1DXcBWIGoYBM5M");
+  assert.equal(extractPlaylistId("https://open.spotify.com/intl-es/playlist/37i9dQZF1DXcBWIGoYBM5M"), "37i9dQZF1DXcBWIGoYBM5M");
+  assert.equal(extractPlaylistId("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M"), "37i9dQZF1DXcBWIGoYBM5M");
+  assert.equal(extractPlaylistId("https://open.spotify.com/album/37i9dQZF1DXcBWIGoYBM5M"), undefined);
 });
 
-test("defaults the Spotify full-catalog source to enabled", () => {
-  const config = loadConfig(baseEnv(), FILE_CONFIG);
-  assert.equal(config.spotify.fullCatalogEnabled, true);
-  assert.equal(config.spotify.partnerQueryHash, undefined);
-  assert.equal(config.spotify.pageDelayMs, 250);
+test("parses human durations", () => {
+  assert.equal(parseDuration("30m"), 1_800_000);
+  assert.equal(parseDuration("24h"), 86_400_000);
+  assert.equal(parseDuration("1d"), 86_400_000);
+  assert.equal(parseDuration("1.5h"), 5_400_000);
+  assert.equal(parseDuration("90"), undefined);
+  assert.equal(parseDuration("soon"), undefined);
 });
 
-test("parses the Spotify full-catalog overrides", () => {
-  const hash = "b".repeat(64);
-  const config = loadConfig({
-    ...baseEnv(),
-    SPOTIFY_FULL_CATALOG: "false",
-    SPOTIFY_PARTNER_HASH: hash.toUpperCase(),
-    SPOTIFY_PAGE_DELAY_MS: "0",
-  }, FILE_CONFIG);
-  assert.equal(config.spotify.fullCatalogEnabled, false);
-  assert.equal(config.spotify.partnerQueryHash, hash);
-  assert.equal(config.spotify.pageDelayMs, 0);
+test("loadConfig reports a missing file, broken JSON and invalid content", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "playlist2mp3-config-"));
+  try {
+    const good = join(dir, "good.json");
+    const broken = join(dir, "broken.json");
+    const invalid = join(dir, "invalid.json");
+    await writeFile(good, `﻿${JSON.stringify(minimal())}`);
+    await writeFile(broken, "{ not json");
+    await writeFile(invalid, JSON.stringify({ playlists: [] }));
+    assert.equal((await loadConfig(good)).playlists.length, 1);
+    await assert.rejects(loadConfig(join(dir, "missing.json")), (e: unknown) => e instanceof ConfigError && e.message.includes("config.example.json"));
+    await assert.rejects(loadConfig(broken), (e: unknown) => e instanceof ConfigError && e.message.includes("not valid JSON"));
+    await assert.rejects(loadConfig(invalid), (e: unknown) => e instanceof ConfigError && e.message.includes("invalid.json"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
-test("rejects an invalid SPOTIFY_PARTNER_HASH", () => {
-  assert.throws(
-    () => loadConfig({ ...baseEnv(), SPOTIFY_PARTNER_HASH: "not-a-hash" }, FILE_CONFIG),
-    ConfigError,
-  );
-});
-
-test("rejects an invalid SPOTIFY_FULL_CATALOG value", () => {
-  assert.throws(() => loadConfig({ ...baseEnv(), SPOTIFY_FULL_CATALOG: "maybe" }, FILE_CONFIG), ConfigError);
+test("the example configuration file is valid", async () => {
+  const config = await loadConfig(join(process.cwd(), "config", "config.example.json"));
+  assert.equal(config.playlists.length > 0, true);
 });
