@@ -1,7 +1,7 @@
 {
   "name": "playlist2mp3",
-  "version": "0.1.0",
-  "description": "Headless containerized service that incrementally mirrors Spotify playlists to local MP3 collections.",
+  "version": "1.0.0",
+  "description": "Headless Docker service that keeps local MP3 folders in sync with Spotify playlists (mirror or incremental).",
   "type": "module",
   "license": "MIT",
   "author": "Alejandro Propst",
@@ -28,7 +28,7 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
-    "check:spotify": "tsx scripts/check-spotify-source.ts",
+    "check:match": "tsx scripts/check-match.ts",
     "test": "node --import tsx --test \"tests/*.test.ts\""
   },
   "dependencies": {
